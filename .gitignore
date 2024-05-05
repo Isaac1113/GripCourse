@@ -76,4 +76,5 @@ DerivedDataCache/*
 #Ignore everything in the Content folder except for these certain folders
 # Content/*
 # !Content/Grip
+Content/Vehicles
 
