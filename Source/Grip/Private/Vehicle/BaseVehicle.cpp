@@ -70,6 +70,16 @@ bool ABaseVehicle::ProbabilitiesInitialized = false;
 
 ABaseVehicle::ABaseVehicle()
 {
+	{
+		static ConstructorHelpers::FObjectFinder<UMaterialInterface> asset(TEXT("Material'/Game/Vehicles/Materials/M_HMDGhostVehicle.M_HMDGhostVehicle'"));
+		CockpitGhostMaterial = asset.Object;
+	}
+
+	{
+		static ConstructorHelpers::FObjectFinder<USoundCue> asset(TEXT("SoundCue'/Game/Audio/Sounds/UI/A_EliminationAlert_Cue.A_EliminationAlert_Cue'"));
+		Elimination.AlertSound = asset.Object;
+	}
+
 	WheelAssignments.Emplace(FWheelAssignment(("F_L_T"), EWheelPlacement::Front, 80.0f, 85.0f, 2.0f, 10.0f));
 	WheelAssignments.Emplace(FWheelAssignment(("F_R_T"), EWheelPlacement::Front, 80.0f, 85.0f, 2.0f, 10.0f));
 	WheelAssignments.Emplace(FWheelAssignment(("B_L_T"), EWheelPlacement::Rear, 80.0f, 85.0f, 2.0f, 10.0f));
@@ -140,6 +150,22 @@ void ABaseVehicle::SetupPlayerInputComponent(UInputComponent* inputComponent)
 
 	if (localPlayerIndex >= 0)
 	{
+
+#pragma region VehicleSpringArm
+
+		inputComponent->BindAxis("LookForwards", this, &ABaseVehicle::LookForwards);
+		inputComponent->BindAxis("LookSideways", this, &ABaseVehicle::LookSideways);
+		inputComponent->BindAction("CameraIn", IE_Pressed, this, &ABaseVehicle::CameraIn);
+		inputComponent->BindAction("CameraOut", IE_Pressed, this, &ABaseVehicle::CameraOut);
+		inputComponent->BindAction("LookBack", IE_Pressed, this, &ABaseVehicle::RearViewCamera);
+		inputComponent->BindAction("LookBack", IE_Released, this, &ABaseVehicle::FrontViewCamera);
+		inputComponent->BindAction("LookLeft", IE_Pressed, this, &ABaseVehicle::LeftViewCamera);
+		inputComponent->BindAction("LookLeft", IE_Released, this, &ABaseVehicle::FrontViewCamera);
+		inputComponent->BindAction("LookRight", IE_Pressed, this, &ABaseVehicle::RightViewCamera);
+		inputComponent->BindAction("LookRight", IE_Released, this, &ABaseVehicle::FrontViewCamera);
+
+#pragma endregion VehicleSpringArm
+
 		APlayerController* controller = Cast<APlayerController>(GetController());
 
 		if (GameMode != nullptr &&
@@ -279,6 +305,21 @@ void ABaseVehicle::BeginPlay()
 		}
 	}
 
+#pragma region VehicleSpringArm
+
+	TArray<int32>& racePositions = GameState->TransientGameState.RaceCameraPositions;
+
+	if (racePositions.IsValidIndex(LocalPlayerIndex) == true)
+	{
+		SpringArm->CameraAt(racePositions[LocalPlayerIndex]);
+	}
+	else
+	{
+		SpringArm->CameraAt(1);
+	}
+
+#pragma endregion VehicleSpringArm
+
 	Physics.StartLocation = GetActorLocation();
 	Physics.StartRotation = GetActorRotation();
 
@@ -345,6 +386,12 @@ void ABaseVehicle::Tick(float deltaSeconds)
 	{
 		return;
 	}
+
+#pragma region VehicleSpringArm
+
+	UpdateCockpitMaterials();
+
+#pragma endregion VehicleSpringArm
 
 	RaceState.Tick(deltaSeconds, PlayGameMode, GameState);
 
@@ -541,6 +588,255 @@ void ABaseVehicle::SetupExtraCollision()
 }
 
 #pragma endregion VehiclePhysics
+
+#pragma region VehicleSpringArm
+
+/**
+* Looking forwards or backwards.
+***********************************************************************************/
+
+void ABaseVehicle::LookForwards(float val)
+{
+	float deadZone = 0.0f;
+
+	if (AI.BotDriver == false &&
+		LocalPlayerIndex >= 0 &&
+		LocalPlayerIndex < GameState->InputControllerOptions.Num())
+	{
+		FInputControllerOptions& input = GameState->InputControllerOptions[LocalPlayerIndex];
+
+		deadZone = input.AnalogDeadZone;
+
+		if (input.IgnoreRightStick == true)
+		{
+			return;
+		}
+	}
+
+	CameraTarget()->SpringArm->LookForwards(val, deadZone);
+}
+
+/**
+* Looking left or right.
+***********************************************************************************/
+
+void ABaseVehicle::LookSideways(float val)
+{
+	if (GameState->IsTrackMirrored() == true)
+	{
+		val *= -1.0f;
+	}
+
+	float deadZone = 0.0f;
+
+	if (AI.BotDriver == false &&
+		LocalPlayerIndex >= 0 &&
+		LocalPlayerIndex < GameState->InputControllerOptions.Num())
+	{
+		FInputControllerOptions& input = GameState->InputControllerOptions[LocalPlayerIndex];
+
+		deadZone = input.AnalogDeadZone;
+
+		if (input.IgnoreRightStick == true)
+		{
+			return;
+		}
+	}
+
+	CameraTarget()->SpringArm->LookSideways(val, deadZone);
+}
+
+/**
+* Looking left.
+***********************************************************************************/
+
+void ABaseVehicle::LeftViewCamera()
+{
+	if (GameState->IsTrackMirrored() == true)
+	{
+		CameraTarget()->SpringArm->RightViewCamera(GameState->GeneralOptions.InstantaneousLook);
+	}
+	else
+	{
+		CameraTarget()->SpringArm->LeftViewCamera(GameState->GeneralOptions.InstantaneousLook);
+	}
+}
+
+/**
+* Looking right.
+***********************************************************************************/
+
+void ABaseVehicle::RightViewCamera()
+{
+	if (GameState->IsTrackMirrored() == true)
+	{
+		CameraTarget()->SpringArm->LeftViewCamera(GameState->GeneralOptions.InstantaneousLook);
+	}
+	else
+	{
+		CameraTarget()->SpringArm->RightViewCamera(GameState->GeneralOptions.InstantaneousLook);
+	}
+}
+
+/**
+* The angle that the rear-end is currently drifting at.
+***********************************************************************************/
+
+float ABaseVehicle::GetSpringArmYaw() const
+{
+	float yaw = GetDriftRatio();
+
+	yaw = FMathEx::NegativePow(yaw, 0.4f);
+	yaw = yaw * Physics.Drifting.RearDriftAngle * SpringArm->DriftYawExtension;
+
+	return yaw;
+}
+
+/**
+* The roll angle.
+***********************************************************************************/
+
+float ABaseVehicle::GetSpringArmRoll() const
+{
+	// This is pretty much just a bit of extra vehicle lean, it's not the entire rotation of the vehicle.
+
+	return (VehicleRotation.Roll * 0.5f) + (GetDriftRatio() * 6.0f * FMathEx::UnitSign(VehicleRotation.Roll));
+}
+
+/**
+* Has the vehicle just smashed into something and requires the forward-facing
+* crash-camera?
+***********************************************************************************/
+
+bool ABaseVehicle::HasSmashedIntoSomething(float maxKPH) const
+{
+	if (PlayGameMode != nullptr)
+	{
+		float lastSpeed = AI.Speed.GetLastValue();
+
+		if (lastSpeed < FMathEx::KilometersPerHourToCentimetersPerSecond(maxKPH))
+		{
+			// We're going slow enough, now see if there was a sharp drop-off in speed to get us here.
+
+			float lastTime = AI.Speed.GetLastTime();
+			float hundredKPH = FMathEx::KilometersPerHourToCentimetersPerSecond(100.0f);
+
+			for (int32 i = AI.Speed.GetNumValues() - 1; i >= 0; i--)
+			{
+				if ((lastTime - AI.Speed[i].Time) < 0.5f)
+				{
+					if ((AI.Speed[i].Value - lastSpeed) > hundredKPH)
+					{
+						return true;
+					}
+				}
+				else
+				{
+					break;
+				}
+			}
+		}
+	}
+
+	return false;
+}
+
+/**
+* Update the materials used to render the vehicle based on cockpit-camera state.
+***********************************************************************************/
+
+void ABaseVehicle::UpdateCockpitMaterials()
+{
+	bool isCockpitView = IsCockpitView();
+
+	if (UsingCockpitMaterial != isCockpitView)
+	{
+		UsingCockpitMaterial = isCockpitView;
+
+		if (isCockpitView == false &&
+			BaseMaterials.Num() > 0)
+		{
+			int32 materialIndex = 0;
+			UObject* lastObject = nullptr;
+
+			for (FMeshMaterialOverride& component : BaseMaterials)
+			{
+				if (lastObject != component.Component)
+				{
+					materialIndex = 0;
+					lastObject = component.Component;
+				}
+
+				component.Component->SetMaterial(materialIndex++, component.Material);
+			}
+		}
+		else if (isCockpitView == true)
+		{
+			if (OurGhostMaterial == nullptr)
+			{
+				OurGhostMaterial = UMaterialInstanceDynamic::Create(CockpitGhostMaterial, this);
+			}
+
+			OurGhostMaterial->SetScalarParameterValue("CentreViewSize", 8.0f);
+
+			if (BaseMaterials.Num() == 0)
+			{
+				for (int32 j = 0; j < VehicleMesh->GetNumMaterials(); j++)
+				{
+					BaseMaterials.Emplace(FMeshMaterialOverride(VehicleMesh, VehicleMesh->GetMaterial(j)));
+				}
+
+				for (int32 i = 0; i < VehicleMesh->GetNumChildrenComponents(); i++)
+				{
+					USceneComponent* child = VehicleMesh->GetChildComponent(i);
+					UStaticMeshComponent* staticMesh = Cast<UStaticMeshComponent>(child);
+					UChildActorComponent* childActor = Cast<UChildActorComponent>(child);
+
+					if (staticMesh != nullptr)
+					{
+						for (int32 j = 0; j < staticMesh->GetNumMaterials(); j++)
+						{
+							BaseMaterials.Emplace(FMeshMaterialOverride(staticMesh, staticMesh->GetMaterial(j)));
+						}
+					}
+					else if (childActor != nullptr)
+					{
+						ACanard* canard = Cast<ACanard>(childActor->GetChildActor());
+
+						if (canard != nullptr)
+						{
+							for (int32 j = 0; j < canard->CanardMesh->GetNumMaterials(); j++)
+							{
+								BaseMaterials.Emplace(FMeshMaterialOverride(canard->CanardMesh, canard->CanardMesh->GetMaterial(j)));
+							}
+						}
+					}
+				}
+			}
+
+			int32 materialIndex = 0;
+			UObject* lastObject = nullptr;
+
+			for (FMeshMaterialOverride& component : BaseMaterials)
+			{
+				if (lastObject != component.Component)
+				{
+					materialIndex = 0;
+					lastObject = component.Component;
+				}
+
+				component.Component->SetMaterial(materialIndex++, OurGhostMaterial);
+			}
+		}
+	}
+
+	if (isCockpitView == true)
+	{
+		OurGhostMaterial->SetScalarParameterValue("CockpitOpacity", GameState->GraphicsOptions.CockpitVehicleVisibility);
+	}
+}
+
+#pragma endregion VehicleSpringArm
 
 #pragma region VehicleHUD
 

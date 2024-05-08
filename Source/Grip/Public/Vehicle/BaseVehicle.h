@@ -1013,6 +1013,61 @@ public:
 
 #pragma endregion PickupShield
 
+#pragma region VehicleSpringArm
+
+public:
+
+	// The angle that the rear-end is currently drifting at.
+	float GetSpringArmYaw() const;
+
+	// The roll angle.
+	float GetSpringArmRoll() const;
+
+	// Get the amount of shake to apply for the auto-boost.
+	float GetAutoBoostShake() const
+	{ return Propulsion.AutoBoostShake; }
+
+	// Has the vehicle just smashed into something and requires the forward-facing crash-camera?
+	bool HasSmashedIntoSomething(float maxKPH) const;
+
+private:
+
+	// Looking left.
+	void LeftViewCamera();
+
+	// Looking right.
+	void RightViewCamera();
+
+	// Looking forwards or backwards.
+	void LookForwards(float val);
+
+	// Looking left or right.
+	void LookSideways(float val);
+
+	// Ease the camera in toward the target.
+	void CameraIn()
+	{ CameraTarget()->SpringArm->CameraIn(); }
+
+	// Ease the camera out away from the target.
+	void CameraOut()
+	{ CameraTarget()->SpringArm->CameraOut(); }
+
+	// Looking front.
+	void FrontViewCamera()
+	{ CameraTarget()->SpringArm->FrontViewCamera(GameState->GeneralOptions.InstantaneousLook); }
+
+	// Looking rear.
+	void RearViewCamera()
+	{ CameraTarget()->SpringArm->RearViewCamera(GameState->GeneralOptions.InstantaneousLook); }
+
+	// Update the materials used to render the vehicle based on cockpit-camera state.
+	void UpdateCockpitMaterials();
+
+	// Indicator as to whether we're currently using cockpit-camera materials or not.
+	bool UsingCockpitMaterial = false;
+
+#pragma endregion VehicleSpringArm
+
 #pragma region VehicleHUD
 
 public:
@@ -1215,7 +1270,9 @@ public:
 	// Is the vehicle current using cockpit-camera view?
 	UFUNCTION(BlueprintCallable, Category = "General")
 		bool IsCockpitView() const
-	{ return false; }
+	{
+		return (IsCinematicCameraActive() == true) ? false : SpringArm->IsCockpitView();
+	}
 
 	// Cycle through the camera points on the vehicle.
 	UFUNCTION(BlueprintCallable, Category = System)
