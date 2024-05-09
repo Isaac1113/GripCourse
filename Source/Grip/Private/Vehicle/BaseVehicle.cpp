@@ -249,6 +249,81 @@ void ABaseVehicle::PostInitializeComponents()
 		WheelRotations.Empty();
 	}
 
+#pragma region VehicleContactSensors
+
+	// Let's setup the wheels from the wheel bone assignments.
+
+	float frontSum = 0.0f;
+	float rearSum = 0.0f;
+
+	Wheels.Wheels.Reserve(numWheels);
+
+	ContactSensorQueryParams.bReturnPhysicalMaterial = true;
+
+	for (const FWheelAssignment& assignment : WheelAssignments)
+	{
+		FName boneName = assignment.BoneName;
+		int32 boneIndex = VehicleMesh->GetBoneIndex(boneName);
+		EWheelPlacement placement = assignment.Placement;
+
+		if (boneIndex != INDEX_NONE)
+		{
+			FVector boneOffset = VehicleMesh->GetBoneTransform(boneIndex, identity).GetLocation();
+			FVector standardOffset = FVector(boneOffset.X, boneOffset.Y, 0.0f);
+			FVector suspensionForcesOffset = standardOffset;
+
+			// Create the wheel from the data we now have.
+
+			FVehicleWheel wheel = FVehicleWheel(boneName, boneOffset, standardOffset, suspensionForcesOffset, placement, assignment.Width, assignment.Radius);
+
+			// Determine where the front and rear axle offsets will end up.
+
+			if (wheel.HasFrontPlacement() == true)
+			{
+				frontSum += 1.0f;
+				Wheels.FrontAxleOffset += boneOffset.X;
+			}
+			else if (wheel.HasRearPlacement() == true)
+			{
+				rearSum += 1.0f;
+				Wheels.RearAxleOffset += boneOffset.X;
+			}
+
+			// Now create the contact sensors for the wheel.
+
+			int32 sensorIndex = 0;
+
+			for (FVehicleContactSensor& sensor : wheel.Sensors)
+			{
+				sensor.Setup(this, ((sensorIndex++ == 0) ? 1 : -1), boneOffset.Y, assignment.VerticalOffset, assignment.Width, assignment.Radius, assignment.RestingCompression);
+			}
+
+			// Add the new wheel with its sensors to our internal list.
+
+			Wheels.Wheels.Emplace(wheel);
+
+			// Create the data required for the animation blueprint.
+
+			WheelOffsets.Emplace(FVector::ZeroVector);
+			WheelRotations.Emplace(FRotator::ZeroRotator);
+		}
+	}
+
+	// Complete the calculation of where the front and rear offsets are, from the average of
+	// the wheels attached to those axles.
+
+	if (frontSum != 0.0f)
+	{
+		Wheels.FrontAxleOffset /= frontSum;
+	}
+
+	if (rearSum != 0.0f)
+	{
+		Wheels.RearAxleOffset /= rearSum;
+	}
+
+#pragma endregion VehicleContactSensors
+
 	AI.OptimumSpeedExtension = FMath::Max(0.0f, (GripCoefficient - 0.5f) * 2.0f);
 
 	if (PlayGameMode != nullptr &&
@@ -458,6 +533,9 @@ void ABaseVehicle::UpdatePhysics(float deltaSeconds, const FTransform& transform
 		SetActorLocation(Physics.StaticHold.Location, false, nullptr, ETeleportType::TeleportPhysics);
 	}
 
+	Wheels.FrontAxlePosition = transform.TransformPosition(FVector(Wheels.FrontAxleOffset, 0.0f, 0.0f));
+	Wheels.RearAxlePosition = transform.TransformPosition(FVector(Wheels.RearAxleOffset, 0.0f, 0.0f));
+
 	VehicleClock += deltaSeconds;
 	Physics.Drifting.Timer += deltaSeconds;
 
@@ -518,6 +596,24 @@ bool ABaseVehicle::IsAirborne(bool ignoreSkipping)
 	}
 	else
 	{
+
+#pragma region VehicleContactSensors
+
+		for (FVehicleWheel& wheel : Wheels.Wheels)
+		{
+			// If any wheel is some distance from the ground then return the physics airborne state.
+
+			if (wheel.GetActiveSensor().HasNearestContactPoint(wheel.Velocity, 0.0f) == false ||
+				wheel.GetActiveSensor().GetNearestContactPointDistance() > (wheel.Radius + HoverDistance) * 2.0f)
+			{
+				return Physics.ContactData.Airborne;
+			}
+		}
+
+		// Otherwise assume we're grounded.
+
+#pragma endregion VehicleContactSensors
+
 		return false;
 	}
 }
@@ -588,6 +684,407 @@ void ABaseVehicle::SetupExtraCollision()
 }
 
 #pragma endregion VehiclePhysics
+
+#pragma region VehicleContactSensors
+
+/**
+* Get the name of a surface from its type.
+***********************************************************************************/
+
+FName ABaseVehicle::GetNameFromSurfaceType(EGameSurface surfaceType)
+{
+	static FName Asphalt("Asphalt");
+	static FName Dirt("Dirt");
+	static FName Water("Water");
+	static FName Rock("Rock");
+	static FName Wood("Wood");
+	static FName Metal("Metal");
+	static FName Grass("Grass");
+	static FName Gravel("Gravel");
+	static FName Sand("Sand");
+	static FName Snow("Snow");
+	static FName Field("Field");
+	static FName Default("Default");
+	static FName Tractionless("Tractionless");
+	static FName Unknown("Unknown");
+
+	switch (surfaceType)
+	{
+	case EGameSurface::Asphalt:
+		return Asphalt;
+	case EGameSurface::Dirt:
+		return Dirt;
+	case EGameSurface::Water:
+		return Water;
+	case EGameSurface::Wood:
+		return Wood;
+	case EGameSurface::Rock:
+		return Rock;
+	case EGameSurface::Metal:
+		return Metal;
+	case EGameSurface::Grass:
+		return Grass;
+	case EGameSurface::Gravel:
+		return Gravel;
+	case EGameSurface::Sand:
+		return Sand;
+	case EGameSurface::Snow:
+		return Snow;
+	case EGameSurface::Field:
+		return Field;
+	case EGameSurface::Default:
+		return Default;
+	case EGameSurface::Tractionless:
+		return Tractionless;
+	default:
+		return Unknown;
+	}
+}
+
+/**
+* Is the vehicle currently with all wheels (more or less) on the ground?
+***********************************************************************************/
+
+bool ABaseVehicle::IsPracticallyGrounded(float distance, bool anyWheel)
+{
+	if (anyWheel == true)
+	{
+		for (FVehicleWheel& wheel : Wheels.Wheels)
+		{
+			if (wheel.IsInContact == true)
+			{
+				return true;
+			}
+			else
+			{
+				if (wheel.GetActiveSensor().HasNearestContactPoint(wheel.Velocity, 0.0f) == true)
+				{
+					if (wheel.GetActiveSensor().GetNearestContactPointDistanceFromTire() < distance)
+					{
+						return true;
+					}
+				}
+			}
+		}
+
+		return false;
+	}
+	else
+	{
+		for (FVehicleWheel& wheel : Wheels.Wheels)
+		{
+			if (wheel.IsInContact == false)
+			{
+				if (wheel.GetActiveSensor().HasNearestContactPoint(wheel.Velocity, 0.0f) == true)
+				{
+					if (wheel.GetActiveSensor().GetNearestContactPointDistanceFromTire() > distance)
+					{
+						return false;
+					}
+				}
+				else
+				{
+					return false;
+				}
+			}
+		}
+
+		return true;
+	}
+}
+
+/**
+* Get the direction from the vehicle to the nearest driving surface.
+***********************************************************************************/
+
+FVector ABaseVehicle::GetSurfaceDirection()
+{
+	if (GetNumWheels() > 0)
+	{
+		// All wheels have the same direction, and this will be pointing towards the
+		// nearest surface, even though the direction vector that describes the
+		// shortest distance to that surface may be something different.
+
+		return Wheels.Wheels[0].GetActiveSensor().GetDirection();
+	}
+
+	return GetUpDirection() * -1.0f;
+}
+
+/**
+* Get the direction from the vehicle to launch weapons from, often opposing the
+* nearest surface direction.
+***********************************************************************************/
+
+FVector ABaseVehicle::GetLaunchDirection(bool inContact) const
+{
+	// All wheels have the same direction, and this will be pointing towards the
+	// nearest surface, even though the direction vector that describes the
+	// shortest distance to that surface may be something different.
+
+	for (const FVehicleWheel& wheel : Wheels.Wheels)
+	{
+		if ((inContact == false || wheel.GetActiveSensor().IsInContact() == true) &&
+			(wheel.GetActiveSensor().HasNearestContactPoint(wheel.Velocity, 0.0f) == true))
+		{
+			return wheel.GetActiveSensor().GetDirection() * -1.0f;
+		}
+	}
+
+	FVector zdirection = GetUpDirection();
+
+	return ((zdirection.Z >= 0.0f) ? zdirection : zdirection * -1.0f);
+}
+
+/**
+* Get the location of the nearest driving surface to the center of the vehicle.
+***********************************************************************************/
+
+FVector ABaseVehicle::GetSurfaceLocation() const
+{
+	FVector normal = FVector::ZeroVector;
+	FVector location = GetCenterLocation();
+
+	if (GetNumWheels() >= 3)
+	{
+		// This assumes all of the wheels have contacts on their active sensors.
+
+		const FVector& direction = Wheels.Wheels[0].GetActiveSensor().GetDirection();
+		const FVector& p0 = Wheels.Wheels[0].GetActiveSensor().GetNearestContactPoint();
+		const FVector& p1 = Wheels.Wheels[1].GetActiveSensor().GetNearestContactPoint();
+		const FVector& p2 = Wheels.Wheels[2].GetActiveSensor().GetNearestContactPoint();
+
+		// Take the contact locations of 3 of the wheels and take a surface normal
+		// away from the plane that the 3 contacts form.
+
+		normal = FVector::CrossProduct(p1 - p0, p2 - p0);
+
+		normal.Normalize();
+
+		// Ensure the plane normal is pointing in the correct direction, towards the
+		// center location from the plane's location.
+
+		if (FVector::DotProduct(direction, normal) > 0.0f)
+		{
+			normal *= -1.0f;
+		}
+
+		// Now project the center location onto that imaginary plane and return the result.
+
+		return FVector::PointPlaneProject(location, p0, normal);
+	}
+
+	return location;
+}
+
+/**
+* Get the normal of the nearest driving surface.
+***********************************************************************************/
+
+FVector ABaseVehicle::GetSurfaceNormal() const
+{
+	FVector normal = FVector::ZeroVector;
+
+	if (GetNumWheels() >= 3)
+	{
+		// This assumes all of the wheels have contacts on their active sensors.
+
+		const FVector& direction = Wheels.Wheels[0].GetActiveSensor().GetDirection();
+		const FVector& p0 = Wheels.Wheels[0].GetActiveSensor().GetNearestContactPoint();
+		const FVector& p1 = Wheels.Wheels[1].GetActiveSensor().GetNearestContactPoint();
+		const FVector& p2 = Wheels.Wheels[2].GetActiveSensor().GetNearestContactPoint();
+
+		// Take the contact locations of 3 of the wheels and take a surface normal
+		// away from the plane that the 3 contacts form.
+
+		normal = FVector::CrossProduct(p1 - p0, p2 - p0);
+
+		normal.Normalize();
+
+		// Ensure the normal is pointing in the correct direction, towards the vehicle.
+
+		if (FVector::DotProduct(direction, normal) > 0.0f)
+		{
+			normal *= -1.0f;
+		}
+	}
+
+	return normal;
+}
+
+/**
+* Guess the normal of the nearest driving surface.
+***********************************************************************************/
+
+FVector ABaseVehicle::GuessSurfaceNormal() const
+{
+	FVector normal = FVector::ZeroVector;
+	int32 numWheels = GetNumWheels();
+
+	// OK, so sometimes we need to know what the surface normal is of the nearest
+	// surface even if we're not in good contact with one. As long as we have 3
+	// wheels where the contact sensors have sensed a surface we can do this.
+
+	if (numWheels >= 4)
+	{
+		// Determine which of the wheels have a surface contact detected.
+
+		TArray<FVector> contacts;
+
+		// #TODO: This will break if you pick 3 wheels on a single axle. This will never
+		// happen in GRIP though.
+
+		for (const FVehicleWheel& wheel : Wheels.Wheels)
+		{
+			if (wheel.GetActiveSensor().HasNearestContactPoint(FVector::ZeroVector, 0.0f) == true)
+			{
+				contacts.Emplace(wheel.GetActiveSensor().GetNearestContactPoint());
+
+				if (contacts.Num() >= 3)
+				{
+					normal = FVector::CrossProduct(contacts[1] - contacts[0], contacts[2] - contacts[0]);
+
+					normal.Normalize();
+
+					if (FVector::DotProduct(wheel.GetActiveSensor().GetDirection(), normal) > 0.0f)
+					{
+						normal *= -1.0f;
+					}
+
+					return normal;
+				}
+			}
+		}
+	}
+
+	return normal;
+}
+
+/**
+* Do we have a valid surface contact, optionally over a period of seconds.
+***********************************************************************************/
+
+bool ABaseVehicle::IsSurfaceDirectionValid(float contactSeconds)
+{
+	for (FVehicleWheel& wheel : Wheels.Wheels)
+	{
+		if (wheel.GetActiveSensor().HasNearestContactPoint(wheel.Velocity, contactSeconds))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/**
+* Get the average distance of the wheels from the vehicle to the nearest driving
+* surface, 0 for not near any driving surface.
+***********************************************************************************/
+
+float ABaseVehicle::GetSurfaceDistance(bool discountFrontWheelsWhenRaised, bool closest)
+{
+	float sum = 0.0f;
+	float averageDistance = 0.0f;
+	float minDistance = 0.0f;
+
+	for (FVehicleWheel& wheel : Wheels.Wheels)
+	{
+		float distance = wheel.GetActiveSensor().GetSurfaceDistance();
+
+		// This hack here is to try to keep the vehicle on the ceiling when doing a charged turbo,
+		// nothing more than that really.
+
+		if (wheel.HasRearPlacement() == false &&
+			discountFrontWheelsWhenRaised == true &&
+			Propulsion.RaiseFrontScale > KINDA_SMALL_NUMBER)
+		{
+			distance = wheel.Radius;
+		}
+
+		if (distance != 0.0f)
+		{
+			sum += 1.0f;
+			averageDistance += distance;
+
+			if (minDistance == 0.0f ||
+				minDistance > distance)
+			{
+				minDistance = distance;
+			}
+		}
+	}
+
+	if (sum != 0.0f)
+	{
+		averageDistance /= sum;
+	}
+
+	if (closest == true)
+	{
+		return minDistance;
+	}
+	else
+	{
+		return averageDistance;
+	}
+}
+
+/**
+* Get the location of the bone for a wheel, in world space.
+* Optionally clipped on the Y axis to within the bounds of the collision shape.
+***********************************************************************************/
+
+FVector ABaseVehicle::GetWheelBoneLocation(const FVehicleWheel& wheel, const FTransform& transform, bool clipToCollision)
+{
+	if (clipToCollision == true)
+	{
+		FVector offset = wheel.BoneOffset;
+
+		if (FMath::Abs(offset.Y) > FMath::Abs(wheel.SuspensionForcesOffset.Y))
+		{
+			offset.Y = wheel.SuspensionForcesOffset.Y;
+		}
+
+		return transform.TransformPosition(offset);
+	}
+	else
+	{
+		return transform.TransformPosition(wheel.BoneOffset);
+	}
+}
+
+/**
+* Get the location to apply suspension forces to for a particular wheel in world
+* space.
+***********************************************************************************/
+
+FVector ABaseVehicle::GetSuspensionForcesLocation(const FVehicleWheel& wheel, const FTransform& transform, float deltaSeconds)
+{
+	FVector offset = wheel.SuspensionForcesOffset;
+
+	return transform.TransformPosition(offset);
+}
+
+/**
+* Get how much grip we should apply to a particular contact sensor at this time.
+***********************************************************************************/
+
+float ABaseVehicle::GetGripRatio(const FVehicleContactSensor& sensor) const
+{
+	{
+		if (sensor.IsInContact() == true)
+		{
+			return TireFrictionModel->GripVsSuspensionCompression.GetRichCurve()->Eval(sensor.GetNormalizedCompression());
+		}
+		else
+		{
+			return 0.0f;
+		}
+	}
+}
+
+#pragma endregion VehicleContactSensors
 
 #pragma region VehicleSpringArm
 
