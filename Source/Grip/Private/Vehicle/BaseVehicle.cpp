@@ -151,6 +151,17 @@ void ABaseVehicle::SetupPlayerInputComponent(UInputComponent* inputComponent)
 	if (localPlayerIndex >= 0)
 	{
 
+#pragma region VehicleControls
+
+		inputComponent->BindAxis("Throttle", this, &ABaseVehicle::Throttle);
+		inputComponent->BindAxis("DigitalSteering", this, &ABaseVehicle::DigitalSteering);
+		inputComponent->BindAxis("AnalogSteering", this, &ABaseVehicle::AnalogSteering);
+		inputComponent->BindAction("Brake", IE_Pressed, this, &ABaseVehicle::HandbrakePressed);
+		inputComponent->BindAction("Brake", IE_Released, this, &ABaseVehicle::HandbrakeReleased);
+		inputComponent->BindAxis("PitchInput", this, &ABaseVehicle::PitchControl);
+
+#pragma endregion VehicleControls
+
 #pragma region VehicleSpringArm
 
 		inputComponent->BindAxis("LookForwards", this, &ABaseVehicle::LookForwards);
@@ -324,6 +335,14 @@ void ABaseVehicle::PostInitializeComponents()
 
 #pragma endregion VehicleContactSensors
 
+#pragma region VehicleBasicForces
+
+	// Record the total gravity for later to save continually computing it.
+
+	Physics.GravityStrength = FMath::Abs(GetGravityForce(true).Z);
+
+#pragma endregion VehicleBasicForces
+
 	AI.OptimumSpeedExtension = FMath::Max(0.0f, (GripCoefficient - 0.5f) * 2.0f);
 
 	if (PlayGameMode != nullptr &&
@@ -479,6 +498,20 @@ void ABaseVehicle::Tick(float deltaSeconds)
 		SetAIDriver(true);
 	}
 
+#pragma region VehicleControls
+
+	InterpolateControlInputs(deltaSeconds);
+
+	UpdateSteering(deltaSeconds, xdirection, ydirection, quaternion);
+
+#pragma endregion VehicleControls
+
+#pragma region VehicleBasicForces
+
+	UpdatePowerAndGearing(deltaSeconds, xdirection, zdirection);
+
+#pragma endregion VehicleBasicForces
+
 	UpdateIdleLock();
 
 	AI.LastVehicleContacts = AI.VehicleContacts;
@@ -546,6 +579,22 @@ void ABaseVehicle::UpdatePhysics(float deltaSeconds, const FTransform& transform
 		Clock0p5.Tick(VehicleIndex, totalVehicles);
 		Clock0p25.Tick(VehicleIndex, totalVehicles);
 		Clock0p1.Tick(VehicleIndex, totalVehicles);
+
+#pragma region VehicleBasicForces
+
+		if (PlayGameMode->PastGameSequenceStart() == false)
+		{
+			// Lock the vehicle down until the game has started.
+
+			ArrestVehicle();
+		}
+		else
+		{
+			Physics.StaticHold.Active = false;
+		}
+
+#pragma endregion VehicleBasicForces
+
 	}
 
 	if (Physics.Timing.TickCount > 0)
@@ -1086,6 +1135,615 @@ float ABaseVehicle::GetGripRatio(const FVehicleContactSensor& sensor) const
 
 #pragma endregion VehicleContactSensors
 
+#pragma region VehicleBasicForces
+
+/**
+* Arrest the vehicle until the game has started.
+***********************************************************************************/
+
+void ABaseVehicle::ArrestVehicle()
+{
+	if (Physics.StaticHold.Active == false &&
+		Physics.ContactData.ModeTime > 1.0f &&
+		Physics.VelocityData.Speed < 100.0f)
+	{
+		if (Physics.StaticHold.Active == false)
+		{
+			Physics.StaticHold.Location = VehicleMesh->GetPhysicsLocation();
+			Physics.StaticHold.Rotation = VehicleMesh->GetPhysicsQuaternion();
+		}
+
+		Physics.StaticHold.Active = true;
+	}
+
+	if (Physics.StaticHold.Active == true)
+	{
+		if (Wheels.BurnoutForce > 0.0f)
+		{
+			Physics.StaticHold.Location = VehicleMesh->GetPhysicsLocation();
+			Physics.StaticHold.Rotation = VehicleMesh->GetPhysicsQuaternion();
+		}
+	}
+}
+
+/**
+* Update the power and gearing, returns true if just shifted up a gear.
+***********************************************************************************/
+
+void ABaseVehicle::UpdatePowerAndGearing(float deltaSeconds, const FVector& xdirection, const FVector& zdirection)
+{
+	if (IsVehicleDestroyed() == false)
+	{
+		int32 topGear = FMath::Max(VehicleEngineModel->GearPowerRatios.Num(), 7) - 1;
+
+		float speed = GetSpeedKPH();
+		float measuredGearPosition = speed / GetGearSpeedRange();
+		float acceleration = (AI.Speed.DifferenceFromPerSecond(VehicleClock - 0.2f, VehicleClock, GetSpeedMPS() * 100.0f) / 100.0f);
+		bool accelerating = (acceleration > -1.0f && Control.ThrottleInput > 0.25f);
+		bool decelerating = (acceleration < -1.0f && Control.ThrottleInput < 0.25f);
+
+		// measuredGearPosition contains the gear and the fraction within that gear.
+
+		int32 gear = FMath::FloorToInt(measuredGearPosition);
+
+		// gear is the integral gear we are currently using.
+
+		Propulsion.CurrentGearPosition = measuredGearPosition - gear;
+
+		// CurrentGearPosition is the fraction of the current gear, 1 being max revs.
+
+		Propulsion.GearTime += deltaSeconds;
+
+		// GearTime is the time spent within the current gear.
+
+		// The amount of overlap to give between gears when accelerating or decelerating.
+
+		float revOverlap = 0.333f;
+		float currentGearPosition = Propulsion.CurrentGearPosition;
+		bool grounded = IsPracticallyGrounded(100.0f);
+
+		// Don't let gear changes happen too frequently, we don't want that
+		// awful high-speed switching between gears that can sometimes occur
+		// during hard cornering.
+
+		bool keepGear = (Propulsion.GearTime < 1.0f);
+
+		if (gear >= topGear)
+		{
+			gear = topGear;
+			currentGearPosition = measuredGearPosition - topGear;
+		}
+		else
+		{
+			// Determine if we're going up or down the gearbox and then over-rev
+			// at the top of a gear if accelerating and under-rev at the bottom of a
+			// gear if decelerating. Give time between gear changes so you can see if
+			// a change is required (rev high where possible).
+
+			if (accelerating == true)
+			{
+				keepGear |= (gear == Propulsion.LastGear + 1 && currentGearPosition < revOverlap);
+			}
+
+			if (decelerating == true)
+			{
+				keepGear |= (gear == Propulsion.LastGear - 1 && currentGearPosition > 1.0f - revOverlap);
+			}
+		}
+
+		if (keepGear == true)
+		{
+			if (gear > Propulsion.LastGear)
+			{
+				// We're overrevving.
+
+				currentGearPosition += gear - Propulsion.LastGear;
+				currentGearPosition = FMath::Min(currentGearPosition, 1.0f + revOverlap);
+			}
+			else if (gear < Propulsion.LastGear)
+			{
+				// We're underrevving.
+
+				currentGearPosition -= Propulsion.LastGear - gear;
+				currentGearPosition = FMath::Max(currentGearPosition, -revOverlap);
+			}
+
+			gear = Propulsion.LastGear;
+		}
+
+		// Calculate the launch boost to boost the overall engine power.
+
+		float launchBoostPower = 1.0f;
+
+		// In low gears, the more away from the flat, the more power we give.
+		// The reason being, it's hard to accelerate up a steep hill in low gear.
+
+		float inclineHelp = 0.0f;
+		float inclineHelpMax = 0.6f;
+
+		if (Propulsion.PistonEngineThrottle > 0.0f)
+		{
+			// If propelling forwards.
+			// If facing downhill then don't do anything, otherwise give more power the more we're facing uphill.
+
+			inclineHelp = (xdirection.Z < 0.0f) ? 0.0f : (FMath::Min(xdirection.Z, inclineHelpMax) / inclineHelpMax);
+		}
+		else
+		{
+			// If propelling backwards.
+			// If facing uphill then don't do anything, otherwise give more power the more we're facing downhill.
+
+			inclineHelp = (xdirection.Z > 0.0f) ? 0.0f : (FMath::Min(-xdirection.Z, inclineHelpMax) / inclineHelpMax);
+		}
+
+		// Translate the position to a based on a power curve for now.
+		// This means low power at beginning of gear and high power at the end.
+		// By 4th gear, we are often producing maximum power throughout the gear range.
+
+		float maxJetEnginePower = Propulsion.MaxJetEnginePower * launchBoostPower;
+		float gearPower = FMath::Lerp(0.0f, 1.0f, inclineHelp);
+		float gearPowerRatio = 1.0f;
+
+		if (VehicleEngineModel->GearPowerRatios.Num() > gear)
+		{
+			gearPowerRatio = VehicleEngineModel->GearPowerRatios[gear];
+#if GRIP_STATIC_ACCELERATION
+#endif // GRIP_STATIC_ACCELERATION
+		}
+
+		if (gearPowerRatio < 1.0f - KINDA_SMALL_NUMBER)
+		{
+			gearPowerRatio *= AccelerationCoefficient;
+		}
+
+		gearPowerRatio = FMath::Min(1.0f, gearPowerRatio);
+
+		float enginePower = maxJetEnginePower;
+		float lowPower = FMath::Lerp(enginePower * gearPowerRatio, enginePower, gearPower);
+
+		Propulsion.CurrentJetEnginePower = FMath::Lerp(lowPower, (IsAirborne() == true) ? Propulsion.MaxJetEnginePowerAirborne : maxJetEnginePower, FMath::Pow(FMath::Max(currentGearPosition, 0.0f), 1.5f));
+
+		float j0 = Propulsion.CurrentJetEnginePower;
+
+		// So now we've got all the engine power calculated, let's manage the gearing simulation.
+
+		bool hasStarted = Propulsion.HasStarted;
+		float throttleInput = Control.ThrottleInput;
+
+		if (PlayGameMode != nullptr &&
+			PlayGameMode->PastGameSequenceStart() == false)
+		{
+			hasStarted |= AI.WillRevOnStartLine;
+		}
+
+		bool shiftedUp = (Propulsion.LastGear < gear);
+		bool shiftedDown = (Propulsion.LastGear > gear);
+
+		// Handle the blueprint effects for gear-shifting.
+
+		if (shiftedUp == true)
+		{
+			GearUpEngaged();
+		}
+		else if (shiftedDown == true)
+		{
+			GearDownEngaged();
+		}
+
+		Propulsion.LastGear = gear;
+
+		if (shiftedUp == true)
+		{
+			// If we're shifting up then added a back-end physics impulse if the conditions are right.
+
+			if (Physics.ContactData.Grounded == true &&
+				Physics.ContactData.ModeTime > 0.2f &&
+				Wheels.HardCompression == false)
+			{
+				bool valid = (Control.ThrottleInput >= 0.0f) ? Wheels.RearAxleDown : Wheels.FrontAxleDown;
+
+				if (valid == true)
+				{
+					bool reversing = FVector::DotProduct(xdirection, GetVelocityOrFacingDirection()) < 0.0f;
+
+					if (reversing == false &&
+						Antigravity == false)
+					{
+						float direction = (Wheels.SoftFlipped == true) ? -1.0f : 1.0f;
+
+						// Although this is clearly physics-related, we're leaving it in the general Tick function
+						// as it's an impulse which doesn't need any sub-stepping.
+
+						VehicleMesh->AddImpulseAtLocation(zdirection * -75.0f * direction * Physics.CurrentMass, Wheels.RearAxlePosition);
+					}
+				}
+			}
+		}
+	}
+}
+
+#pragma endregion VehicleBasicForces
+
+#pragma region VehicleControls
+
+/**
+* Control the forwards / backwards motion.
+* The value will be somewhere between -1 and +1, often at 0 or the extremes.
+***********************************************************************************/
+
+void ABaseVehicle::Throttle(float value, bool bot)
+{
+	if (bot == AI.BotDriver)
+	{
+		bool paused = false;
+
+		if (PlayGameMode != nullptr)
+		{
+			paused = PlayGameMode->GamePaused == true && AI.BotDriver == false;
+		}
+
+		if (paused == false)
+		{
+			float thrustForce = Control.ThrottleInput;
+
+			Control.RawThrottleInput = FMath::Clamp(value, -1.0f, 1.0f);
+			Control.ThrottleInput = Control.RawThrottleInput;
+
+			if (Control.ThrottleInput != 0.0f)
+			{
+				Propulsion.HasStarted = true;
+			}
+
+			if (thrustForce == 0.0f &&
+				Control.ThrottleInput > 0.0f)
+			{
+				ThrustEngaged();
+
+				Control.DecideWheelSpin = true;
+			}
+			else if (Control.ThrottleInput == 0.0f &&
+				thrustForce > 0.0f)
+			{
+				ThrustDisengaged();
+			}
+
+			Control.ThrottleInput = CalculateAssistedThrottleInput();
+		}
+	}
+}
+
+/**
+* Control the left / right motion.
+* The value will be somewhere between -1 and +1.
+***********************************************************************************/
+
+void ABaseVehicle::Steering(float value, bool analog, bool bot)
+{
+	if (bot == AI.BotDriver)
+	{
+		bool paused = false;
+
+		if (PlayGameMode != nullptr)
+		{
+			paused = PlayGameMode->GamePaused == true && AI.BotDriver == false;
+		}
+
+		if (bot == false)
+		{
+			if (GameState->IsTrackMirrored() == true)
+			{
+				value *= -1.0f;
+			}
+		}
+
+		if (paused == false)
+		{
+			value = FMath::Clamp(value, -1.0f, 1.0f);
+
+			if (AI.BotDriver == false &&
+				GameState->InputControllerOptions.IsValidIndex(LocalPlayerIndex) == true)
+			{
+				FInputControllerOptions& input = GameState->InputControllerOptions[LocalPlayerIndex];
+
+				if (FMath::Abs(value) < input.AnalogDeadZone)
+				{
+					value = 0.0f;
+				}
+
+				// Make the sensitivity less responsive at lower levels in the new engine because - because players complaining.
+
+				value = FMathEx::NegativePow(value, 1.0f + ((1.0f - input.SteeringSensitivity) * 4.0f));
+			}
+
+			if (analog == true)
+			{
+				Control.SteeringInputAnalog = value;
+
+				if (bot == true ||
+					value != 0.0f)
+				{
+					Control.SteeringAnalog = true;
+				}
+			}
+			else
+			{
+				Control.SteeringInputDigital = value;
+
+				if (value != 0.0f)
+				{
+					Control.SteeringAnalog = false;
+				}
+			}
+		}
+	}
+}
+
+/**
+* Engage the brake.
+***********************************************************************************/
+
+void ABaseVehicle::HandbrakePressed(bool bot)
+{
+	if (bot == AI.BotDriver)
+	{
+		if (Control.BrakeInput < 0.1f)
+		{
+			// Determine the braking bias only when the brake is off, and maintain
+			// that bias for the duration of the braking action.
+
+			Physics.BrakingSteeringBias = FMathEx::UnitSign(Physics.SteeringBias);
+		}
+
+		if (Control.BrakeInput != 1.0f)
+		{
+			Control.BrakeInput = 1.0f;
+			Control.HandbrakePressed = GetRealTimeClock();
+		}
+	}
+}
+
+/**
+* Release the brake.
+***********************************************************************************/
+
+void ABaseVehicle::HandbrakeReleased(bool bot)
+{
+	if (bot == AI.BotDriver)
+	{
+		if (Control.BrakeInput != 0.0f)
+		{
+			Control.BrakeInput = 0.0f;
+
+			if (RaceState.RaceTime == 0.0f)
+			{
+				Control.BrakePosition = Control.BrakeInput;
+			}
+		}
+	}
+}
+
+/**
+* Handle the use of automatic braking to assist the driver.
+***********************************************************************************/
+
+float ABaseVehicle::AutoBrakePosition(const FVector& xdirection) const
+{
+	float speed = GetSpeedKPH();
+
+	if (speed > 5.0f)
+	{
+		FVector direction = GetVelocityOrFacingDirection();
+		float dotProduct = FVector::DotProduct(direction, xdirection);
+
+		// If we're throttling forwards but are actually currently reversing, or we're throttling
+		// backwards but actually going forwards, then apply the brake to make the transition to
+		// the intended direction of travel pass more quickly.
+
+		if ((Control.ThrottleInput > 0.0f && dotProduct < -0.5f) ||
+			(Control.ThrottleInput < 0.0f && dotProduct > +0.5f))
+		{
+			float ratio = 1.0f - FMathEx::GetRatio(speed, 75.0f, 150.0f);
+
+			return FMath::Max(Control.BrakePosition, ratio);
+		}
+	}
+
+	return Control.BrakePosition;
+}
+
+/**
+* Calculate the assisted throttle input for a player.
+***********************************************************************************/
+
+float ABaseVehicle::CalculateAssistedThrottleInput()
+{
+	float finalThrottle = Control.RawThrottleInput;
+
+	return finalThrottle;
+}
+
+/**
+* Interpolate the control inputs to give smooth changes to digital inputs.
+***********************************************************************************/
+
+void ABaseVehicle::InterpolateControlInputs(float deltaSeconds)
+{
+	float steeringInput = Control.SteeringInputAnalog;
+	float steeringInputSpeed = 8.0f;
+
+	if (AI.BotDriver == false)
+	{
+		// Decide which direction to pitch the vehicle in when using air control.
+
+		if (Control.AirbornePitchInput == 0.0f &&
+			Control.AirborneControlActive == true)
+		{
+			Control.AirborneControlTimer += deltaSeconds;
+
+			if (Control.AirborneControlTimer > 1.0f)
+			{
+				FMinimalViewInfo viewInfo;
+
+				Camera->GetCameraViewNoPostProcessing(0.0f, viewInfo);
+
+				FVector cameraUp = viewInfo.Rotation.Quaternion().GetUpVector();
+				FVector vehicleUp = GetActorRotation().Quaternion().GetUpVector();
+
+				Control.AirborneControlScale = ((FVector::DotProduct(vehicleUp, cameraUp) < 0.0f) ? -1.0f : 1.0f);
+			}
+		}
+		else
+		{
+			Control.AirborneControlTimer = 0.0f;
+		}
+
+		if (Control.SteeringAnalog == true)
+		{
+			if (LocalPlayerIndex >= 0 &&
+				LocalPlayerIndex < GameState->InputControllerOptions.Num())
+			{
+				FInputControllerOptions& input = GameState->InputControllerOptions[LocalPlayerIndex];
+
+				steeringInputSpeed = 4.0f + (input.AnalogSteeringSpeed * 4.0f);
+			}
+		}
+		else
+		{
+			steeringInput = Control.SteeringInputDigital;
+
+			if (LocalPlayerIndex >= 0 &&
+				LocalPlayerIndex < GameState->InputControllerOptions.Num())
+			{
+				FInputControllerOptions& input = GameState->InputControllerOptions[LocalPlayerIndex];
+
+				steeringInputSpeed = 4.0f + (input.DigitalSteeringSpeed * 4.0f);
+			}
+		}
+
+		Control.ThrottleInput = CalculateAssistedThrottleInput();
+	}
+
+	// Interpolate the steering and brake positions.
+
+	Control.SteeringPosition = FMathEx::GravitateToTarget(Control.SteeringPosition, steeringInput, deltaSeconds * steeringInputSpeed);
+	Control.BrakePosition = FMathEx::GravitateToTarget(Control.BrakePosition, Control.BrakeInput, deltaSeconds * BrakingInputSpeed);
+
+	Control.AirborneRollInput = steeringInput;
+
+	Control.AirborneRollPosition = FMathEx::GravitateToTarget(Control.AirborneRollPosition, Control.AirborneRollInput, deltaSeconds * steeringInputSpeed);
+	Control.AirbornePitchPosition = FMathEx::GravitateToTarget(Control.AirbornePitchPosition, Control.AirbornePitchInput, deltaSeconds * steeringInputSpeed);
+
+	if (Physics.ContactData.Airborne == true)
+	{
+		if (FMath::Abs(Control.ThrottleInput) < 0.25f)
+		{
+			Propulsion.ThrottleOffWhileAirborne = true;
+		}
+	}
+	else
+	{
+		Propulsion.ThrottleOffWhileAirborne = false;
+	}
+
+	if (PlayGameMode != nullptr)
+	{
+		if (PlayGameMode->PastGameSequenceStart() == false)
+		{
+			Control.BrakePosition = 1.0f;
+		}
+
+		Control.ThrottleList.AddValue(GameMode->GetRealTimeClock(), Control.ThrottleInput);
+	}
+}
+
+/**
+* Update the steering of the wheels.
+***********************************************************************************/
+
+void ABaseVehicle::UpdateSteering(float deltaSeconds, const FVector& xdirection, const FVector& ydirection, const FQuat& quaternion)
+{
+	// Manage the steering control.
+
+	float speed = GetSpeedKPH();
+	float rfb = SteeringModel->FrontSteeringVsSpeed.GetRichCurve()->Eval(speed);
+	float rbb = SteeringModel->BackSteeringVsSpeed.GetRichCurve()->Eval(speed);
+
+	float rf = rfb;
+	float rb = rbb;
+
+	rf = FMath::Max(rf, 0.001f);
+	rb = FMath::Max(rb, 0.001f);
+
+	float steeringPosition = Control.SteeringPosition;
+
+	float mfb = SteeringModel->FrontWheelsMaxSteeringAngle;
+	float mbb = SteeringModel->BackWheelsMaxSteeringAngle;
+
+	float mf = mfb;
+	float mb = mbb;
+
+	Wheels.BackSteeringAngle = steeringPosition * mb * rb;
+	Wheels.FrontSteeringAngle = -steeringPosition * mf * rf;
+
+	if (Wheels.FlipTimer > 0.0f)
+	{
+		Wheels.BackSteeringAngle = FMath::Lerp(Wheels.BackSteeringAngle, Wheels.BackSteeringAngle * -1.0f, Wheels.FlipTimer);
+		Wheels.FrontSteeringAngle = FMath::Lerp(Wheels.FrontSteeringAngle, Wheels.FrontSteeringAngle * -1.0f, Wheels.FlipTimer);
+	}
+
+	if (Wheels.SoftFlipped == false)
+	{
+		Wheels.BackSteeringAngle *= -1.0f;
+		Wheels.FrontSteeringAngle *= -1.0f;
+	}
+
+	float rf1 = SteeringModel->FrontSteeringVsSpeed.GetRichCurve()->Eval(0);
+	float rb1 = SteeringModel->BackSteeringVsSpeed.GetRichCurve()->Eval(0);
+
+	Wheels.FrontVisualSteeringAngle = Wheels.FrontSteeringAngle;
+	Wheels.BackVisualSteeringAngle = Wheels.BackSteeringAngle;
+
+	if (rf1 > 0.0f)
+	{
+		Wheels.FrontVisualSteeringAngle = FMath::Lerp(Wheels.FrontSteeringAngle, Wheels.FrontSteeringAngle * (rf1 / rf), SteeringModel->FrontVisualUnderSteerRatio);
+	}
+
+	if (rb1 > 0.0f)
+	{
+		Wheels.BackVisualSteeringAngle = FMath::Lerp(Wheels.BackSteeringAngle, Wheels.BackSteeringAngle * (rb1 / rb), SteeringModel->BackVisualUnderSteerRatio);
+	}
+
+	for (FVehicleWheel& wheel : Wheels.Wheels)
+	{
+		FRotator steering = FRotator(0.0f, ((wheel.HasRearPlacement() == true) ? Wheels.BackSteeringAngle : Wheels.FrontSteeringAngle), 0.0f);
+		float steeringScale = FMathEx::GetRatio(GetSpeedKPH() * FMath::Abs(FVector::DotProduct(GetDirection(), GetVelocityDirection())), 10.0f, 100.0f);
+
+		wheel.SetSteeringTransform(quaternion, steering, steering * steeringScale);
+	}
+}
+
+/**
+* Handle the pitch control for airborne control.
+***********************************************************************************/
+
+void ABaseVehicle::PitchControl(float value)
+{
+	if (AI.BotDriver == false &&
+		GameState->InputControllerOptions.IsValidIndex(LocalPlayerIndex) == true)
+	{
+		FInputControllerOptions& input = GameState->InputControllerOptions[LocalPlayerIndex];
+
+		if (FMath::Abs(value) < input.AnalogDeadZone)
+		{
+			value = 0.0f;
+		}
+	}
+
+	Control.AirbornePitchInput = value;
+}
+
+#pragma endregion VehicleControls
+
 #pragma region VehicleSpringArm
 
 /**
@@ -1535,6 +2193,10 @@ void ABaseVehicle::SetAIDriver(bool aiDriver, bool setVehicle, bool setInputMapp
 
 		if (AI.BotDriver == true)
 		{
+		}
+		else
+		{
+			HandbrakeReleased(false);
 		}
 	}
 

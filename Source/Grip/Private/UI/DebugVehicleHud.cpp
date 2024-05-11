@@ -43,6 +43,16 @@ void ADebugVehicleHUD::DrawHUD()
 		AddText(TEXT("GetSurfaceName"), FText::FromName(vehicle->GetSurfaceName()));
 		AddFloat(TEXT("GetSpeedKPH"), vehicle->GetSpeedKPH());
 
+#pragma region VehicleBasicForces
+
+		AddInt(TEXT("GetJetEnginePower"), (int32)vehicle->GetJetEnginePower(vehicle->Wheels.NumWheelsInContact, vehicle->GetDirection()));
+		AddInt(TEXT("GetDragForce"), (int32)vehicle->GetDragForce().Size());
+		AddInt(TEXT("GetRollingResistance"), (int32)vehicle->GetRollingResistanceForce(vehicle->GetFacingDirection()).Size());
+		AddFloat(TEXT("GetDownForce"), (vehicle->GetDownForce().Size() / vehicle->Physics.GravityStrength));
+		AddFloat(TEXT("AutoBrakePosition"), vehicle->AutoBrakePosition(vehicle->GetFacingDirection()));
+
+#pragma endregion VehicleBasicForces
+
 		if (vehicle->Physics.Timing.TickCount > 0)
 		{
 			AddFloat(TEXT("General Clock"), vehicle->Physics.Timing.GeneralTickSum);

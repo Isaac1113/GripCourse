@@ -1214,6 +1214,114 @@ private:
 
 #pragma endregion VehicleContactSensors
 
+#pragma region VehicleBasicForces
+
+public:
+
+	// Get the predicted velocity based on recorded velocity information.
+	FVector GetPredictedVelocity() const;
+
+private:
+
+	// Arrest the vehicle until the game has started.
+	void ArrestVehicle();
+
+	// Update the power and gearing, returns true if just shifted up a gear.
+	void UpdatePowerAndGearing(float deltaSeconds, const FVector& xdirection, const FVector& zdirection);
+
+	// Get the engine power applied at this point in time if we were to use full throttle.
+	float GetJetEnginePower(int32 numWheelsInContact, const FVector& xdirection);
+
+	// Get the force of gravity to apply to the vehicle over one second.
+	FVector GetGravityForce(bool totalGravity) const;
+
+	// Get the drag force based on the velocity given and the vehicle's drag coefficient.
+	FVector GetDragForceFor(FVector velocity) const;
+
+	// Get the drag force based on the velocity of the vehicle and its drag coefficient.
+	FVector GetDragForce() const
+	{ return GetDragForceFor(Physics.VelocityData.Velocity); }
+
+	// Get the rolling resistance force based on the velocity given and the vehicle's rolling resistance coefficient.
+	FVector GetRollingResistanceForceFor(float speed, const FVector& velocityDirection, const FVector& xdirection) const;
+
+	// Get the rolling resistance force based on the velocity of the vehicle and its rolling resistance coefficient.
+	FVector GetRollingResistanceForce(const FVector& xdirection) const
+	{ return GetRollingResistanceForceFor(Physics.VelocityData.Speed, Physics.VelocityData.VelocityDirection, xdirection); }
+
+	// Get the down force based on the velocity of the vehicle and its down force coefficient, in meters per second.
+	FVector GetDownForce();
+
+	// Is a pickup currently charging at all?
+	bool PickupIsCharging(bool ignoreTurbos)
+	{ return false; }
+
+	// Get the speed range for a single gear.
+	// This is for piston engine simulation.
+	float GetGearSpeedRange() const
+	{ return VehicleEngineModel->GearSpeedRange; }
+
+#pragma endregion VehicleBasicForces
+
+#pragma region VehicleControls
+
+public:
+
+	// The state of control over the vehicle.
+	const FVehicleControl& GetVehicleControl() const
+	{ return Control; }
+
+private:
+
+	// Control the forwards / backwards motion, the value will be somewhere between -1 and +1, often at 0 or the extremes.
+	void Throttle(float value, bool bot);
+
+	// Control the left / right motion, the value will be somewhere between -1 and +1.
+	void Steering(float value, bool analog, bool bot);
+
+	// Engage the brake.
+	void HandbrakePressed(bool bot);
+
+	// Release the brake.
+	void HandbrakeReleased(bool bot);
+
+	// Control the forwards / backwards motion, the value will be somewhere between -1 and +1, often at 0 or the extremes.
+	void Throttle(float value)
+	{ Throttle(value, false); }
+
+	// Control the left / right motion, the value will be somewhere between -1 and +1.
+	void AnalogSteering(float value)
+	{ Steering(value, true, false); }
+
+	// Control the left / right motion, the value will be somewhere between -1 and +1.
+	void DigitalSteering(float value)
+	{ Steering(value, false, false); }
+
+	// Engage the brake.
+	void HandbrakePressed()
+	{ HandbrakePressed(false); }
+
+	// Release the brake.
+	void HandbrakeReleased()
+	{ HandbrakeReleased(false); }
+
+	// Handle the use of automatic braking to assist the driver.
+	float AutoBrakePosition(const FVector& xdirection) const;
+
+	// Calculate the assisted throttle input for a player.
+	float CalculateAssistedThrottleInput();
+
+	// Interpolate the control inputs to give smooth changes to digital inputs.
+	void InterpolateControlInputs(float deltaSeconds);
+
+	// Handle the pitch control for airborne control.
+	void PitchControl(float value);
+
+	// Update the steering of the wheels.
+	void UpdateSteering(float deltaSeconds, const FVector& xdirection, const FVector& ydirection, const FQuat& quaternion);
+
+#pragma endregion VehicleControls
+
 #pragma region VehicleLaunch
 
 private:
@@ -1629,7 +1737,7 @@ public:
 
 	// Get the position within the current gear that the emulated piston engine is at, between 0 and 1.
 	float GearPosition() const
-	{ return 0.0f; }
+	{ return Propulsion.CurrentGearPosition; }
 
 	// The unique index number of the vehicle.
 	int32 VehicleIndex = 0;

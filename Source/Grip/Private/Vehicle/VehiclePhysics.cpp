@@ -49,6 +49,29 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 		return;
 	}
 
+#pragma region VehicleBasicForces
+
+	if (Physics.StaticHold.Active == true)
+	{
+		// Lock the vehicle in position when on the start line before play begins.
+
+		if (Wheels.BurnoutForce == 0.0f)
+		{
+			if (PlayGameMode == nullptr)
+			{
+				VehicleMesh->SetPhysicsLocationAndQuaternionSubstep(VehicleMesh->GetPhysicsLocation(), Physics.StaticHold.Rotation);
+			}
+			else
+			{
+				VehicleMesh->SetPhysicsLocationAndQuaternionSubstep(Physics.StaticHold.Location, Physics.StaticHold.Rotation);
+				VehicleMesh->SetPhysicsLinearVelocitySubstep(FVector::ZeroVector);
+				VehicleMesh->SetPhysicsAngularVelocityInRadiansSubstep(FVector::ZeroVector);
+			}
+		}
+	}
+
+#pragma endregion VehicleBasicForces
+
 	// If the vehicle is idle-locked then clamp it by settings its location and orientation
 	// and nullifying any velocity.
 
@@ -122,7 +145,265 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 
 #pragma endregion VehicleContactSensors
 
-	float brakePosition = 0.0f;
+#pragma region VehicleBasicForces
+
+	// Handle the engine power. Only apply the power if at least two wheels on the ground. This is
+	// fairly arbitrary right now, as we're simulating a jet engine at the back of the vehicle, which
+	// could be active even if the wheels were in the air, but just "feels" wrong when playing the game.
+
+	// The first thing we need to do is calculate how much thrust the driver is wanting, between -1 and +1.
+	// We enter that into Propulsion.JetEngineThrottle.
+
+	{
+		Propulsion.JetEngineThrottle = Control.GetBrakedThrottle();
+	}
+
+	// Now calculate the piston engine thrust, though this is a conceptual value which we only use to
+	// simulate the effects of a piston engine, it doesn't increase the speed of the vehicle over and
+	// above the jet engine throttle.
+
+	Propulsion.PistonEngineThrottle = (Wheels.NumWheelsInContact >= 2) ? Propulsion.JetEngineThrottle : 0.0f;
+
+#pragma endregion VehicleBasicForces
+
+#pragma region VehicleControls
+
+	float brakePosition = AutoBrakePosition(xdirection);
+
+#pragma endregion VehicleControls
+
+#pragma region VehicleBasicForces
+
+	// General force scale, so we can easily modify all applied forces if desired.
+
+	float forceScale = 50.0f;
+
+	// Determine the location in world space of all the wheels, along with their velocity.
+
+	for (FVehicleWheel& wheel : Wheels.Wheels)
+	{
+		// We grab the standard wheel location here, which keeps the application of grip
+		// consistent across different vehicles, so that we can tune it more easily when
+		// we want it to be different for each vehicle model.
+
+		wheel.Location = GetStandardWheelLocation(wheel, transform);
+		wheel.Velocity = VehicleMesh->GetPhysicsLinearVelocityAtPoint(wheel.Location);
+		wheel.LateralForceVector = FVector::ZeroVector;
+	}
+
+	FVector location = VehicleMesh->GetPhysicsLocation();
+	FVector movement = (firstFrame == true || Physics.ResetLastLocation == true) ? Physics.VelocityData.Velocity * deltaSeconds : location - Physics.LastLocation;
+
+	Physics.LastLocation = location;
+	Physics.ResetLastLocation = false;
+
+#pragma region VehicleAirControl
+
+	// Handle the air control.
+
+	bool wasAirborneControlActive = Control.AirborneControlActive;
+
+	Control.AirborneControlActive = (Propulsion.ThrottleOffWhileAirborne == true) &&
+		Physics.ContactData.Airborne == true &&
+		Physics.ContactData.ModeTime > 0.25f;
+
+	if (Control.AirborneControlActive == true &&
+		wasAirborneControlActive == false)
+	{
+		// At the beginning of using air control, determine the pitch direction
+		// so it's the most intuitive direction.
+
+		FMinimalViewInfo viewInfo;
+
+		Camera->GetCameraViewNoPostProcessing(0.0f, viewInfo);
+
+		FVector cameraUp = viewInfo.Rotation.Quaternion().GetUpVector();
+		FVector vehicleUp = GetActorRotation().Quaternion().GetUpVector();
+
+		Control.AirborneControlScale = ((FVector::DotProduct(vehicleUp, cameraUp) < 0.0f) ? -1.0f : 1.0f);
+	}
+
+	bool airborneControlActive = Control.AirborneControlActive;
+	float airborneRollPosition = Control.AirborneRollPosition;
+	float airbornePitchPosition = Control.AirbornePitchPosition;
+
+	if (airborneControlActive == true)
+	{
+		// Use air control if the vehicle has been airborne and the player has indicated so
+		// with the controller.
+
+		float secondsToMaxDegrees = 1.0f;
+		float maxDegreesPerSecond = 120.0f;
+		FVector airborneForce = FVector::ZeroVector;
+		const FVector& angularVelocity = Physics.VelocityData.AngularVelocity;
+
+		if (FMath::Abs(airborneRollPosition) > 0.25f)
+		{
+			// Roll the vehicle if not already rotating too fast.
+
+			if ((airborneRollPosition > 0.0f && angularVelocity.X > -maxDegreesPerSecond) ||
+				(airborneRollPosition < 0.0f && angularVelocity.X < maxDegreesPerSecond))
+			{
+				airborneForce.X -= (maxDegreesPerSecond / secondsToMaxDegrees) * airborneRollPosition * AirborneThrustersPower * deltaSeconds;
+			}
+		}
+
+		if (FMath::Abs(airbornePitchPosition) > 0.25f)
+		{
+			// Pitch the vehicle if not already rotating too fast.
+
+			if ((airbornePitchPosition < 0.0f && angularVelocity.Y < maxDegreesPerSecond) ||
+				(airbornePitchPosition > 0.0f && angularVelocity.Y > -maxDegreesPerSecond))
+			{
+				airborneForce.Y += (maxDegreesPerSecond / secondsToMaxDegrees) * airbornePitchPosition * AirborneThrustersPower * deltaSeconds * Control.AirborneControlScale;
+			}
+		}
+
+		if (airborneForce != FVector::ZeroVector)
+		{
+			// If we have some air control to impart, then convert it from vehicle space
+			// into world space and then apply it to the vehicle. This isn't actually an
+			// impulse despite the name, as we're passing it as a velocity change.
+
+			VehicleMesh->AddAngularImpulseInDegreesSubstep(transform.TransformVector(airborneForce), NAME_None, true);
+		}
+	}
+
+	if (Control.AirborneControlActive == false)
+	{
+		Control.AirborneRollPosition = 0.0f;
+		Control.AirbornePitchPosition = 0.0f;
+	}
+
+#pragma endregion VehicleAirControl
+
+	// Apply the engine power now, to the appropriate axle depending on which direction we
+	// are heading in.
+
+	if (IsPowerAvailable() == true &&
+		Propulsion.JetEngineThrottle != 0.0f)
+	{
+		FVector jetForce = FVector::ZeroVector;
+		float jetPower = GetJetEnginePower(Wheels.NumWheelsInContact, xdirection);
+
+		// Propulsion.JetEngineThrottle represents the strength of the jet throttle between -1 and +1
+		// negative being with the reverse control.
+
+		if (IsAirborne() == true)
+		{
+			// When in the air, only apply the jet-thrust down the horizontal plane of the velocity direction,
+			// proportional to the direction the vehicle is facing compared to that velocity direction. We
+			// don't want people flying sideways, or up and down, under jet thrust.
+
+			FVector direction = Physics.VelocityData.VelocityDirection;
+
+			direction.Z = 0.0f;
+
+			if (direction.Normalize(0.001f) == true)
+			{
+				float scale = FVector::DotProduct(xdirection, Physics.VelocityData.VelocityDirection);
+
+				scale *= FMathEx::GetRatio(GetSpeedKPH(), 100.0f, 200.0f);
+
+				if (scale > KINDA_SMALL_NUMBER)
+				{
+					// So add this controlled airborne jet thrust as a force here.
+
+					VehicleMesh->AddForceSubstep(direction * Propulsion.JetEngineThrottle * jetPower * forceScale * scale);
+				}
+			}
+		}
+		else
+		{
+			// If on the ground then apply the jet engine in the direction the vehicle is facing,
+			// or opposite to that if the vehicle reverse throttling.
+
+			jetForce += xdirection * Propulsion.JetEngineThrottle * jetPower * forceScale;
+		}
+
+		if (jetForce != FVector::ZeroVector)
+		{
+			// Add in the normal jet thrust as a force here.
+
+			FVector position = (Control.ThrottleInput >= 0.0f) ? Wheels.FrontAxlePosition : Wheels.RearAxlePosition;
+
+			VehicleMesh->AddForceAtLocationSubstep(jetForce, position);
+		}
+	}
+
+	// Handle the drag force.
+
+	VehicleMesh->AddForceSubstep(GetDragForce() * forceScale);
+
+	// Handle the rolling resistance.
+
+	VehicleMesh->AddForceSubstep(GetRollingResistanceForce(xdirection) * forceScale);
+
+	// Handle the down force.
+
+	VehicleMesh->AddForceSubstep(GetDownForce());
+
+	// Finally handle the gravity scaling.
+
+	if (FMath::Abs(GravityScale - 1.0f) > KINDA_SMALL_NUMBER)
+	{
+		VehicleMesh->AddForceSubstep(GetGravityForce(false));
+	}
+
+	// Update the tracking of vehicle movement over time. This information is used to make
+	// decisions about vehicle behavior at other points in the code base. VelocityPitchList
+	// for example is used to determine whether we should try to mitigate bouncing as part
+	// of the physics tweaks we apply to make the game more playable.
+
+	float physicsClock = Physics.Timing.TickSum;
+
+	if (Physics.Timing.TickCount > 0)
+	{
+		FVector direction = GetVelocityOrFacingDirection();
+
+		if (FVector::DotProduct(direction, xdirection) < 0.0f)
+		{
+			direction *= -1.0f;
+		}
+
+		FRotator directionChange = Physics.LastPhysicsTransform.InverseTransformVector(xdirection).Rotation();
+		float yawChange = directionChange.Yaw;
+
+		yawChange /= Physics.Timing.LastSubstepDeltaSeconds; yawChange /= 100.0f;
+
+		Physics.PitchChangeList.AddValue(Physics.Timing.TickSum, directionChange.Pitch);
+		Physics.VelocityPitchList.AddValue(Physics.Timing.TickSum, direction.Rotation().Pitch);
+		Physics.VelocityList.AddValue(Physics.Timing.TickSum, Physics.VelocityData.Velocity);
+
+		if (IsPracticallyGrounded() == true &&
+			movement.Size() > 10.0f * 100.0f * deltaSeconds)
+		{
+			FVector difference = movement; difference.Normalize(); difference -= Physics.VelocityData.LastVelocityDirection;
+			FVector offset = Physics.VelocityData.LastVelocityDirection.ToOrientationQuat().UnrotateVector(difference);
+
+			Physics.AngularPitchList.AddValue(Physics.Timing.TickSum, -Physics.VelocityData.AngularVelocity.Y);
+			Physics.DirectionVsVelocityList.AddValue(Physics.Timing.TickSum, offset);
+
+#if UE_BUILD_DEBUG
+			FVector predicted = (Physics.LastVelocityDirection.ToOrientationQuat().RotateVector(Physics.DirectionVsVelocityList.LastValue()) + Physics.LastVelocityDirection);
+			predicted.Normalize();
+			predicted *= movement.Size();
+			ensureMsgf((predicted - movement).IsNearlyZero(0.01f) == true, TEXT("Something wrong with vehicle path prediction"));
+#endif // UE_BUILD_DEBUG
+		}
+		else
+		{
+			Physics.AngularPitchList.AddValue(Physics.Timing.TickSum, 0.0f);
+			Physics.DirectionVsVelocityList.AddValue(Physics.Timing.TickSum, FVector::ForwardVector);
+		}
+	}
+
+	Physics.VelocityData.LastVelocityDirection = Physics.VelocityData.VelocityDirection;
+
+	Physics.Timing.LastSubstepDeltaSeconds = deltaSeconds;
+
+#pragma endregion VehicleBasicForces
+
 }
 
 #pragma region VehicleContactSensors
@@ -604,6 +885,237 @@ bool ABaseVehicle::IsPowerAvailable() const
 }
 
 #pragma endregion VehicleContactSensors
+
+#pragma region VehicleBasicForces
+
+/**
+* Get the force of gravity to apply to the vehicle over one second.
+***********************************************************************************/
+
+FVector ABaseVehicle::GetGravityForce(bool totalGravity) const
+{
+	float force = 0.0f;
+	float worldGravity = World->GetGravityZ();
+
+	force += worldGravity * (GravityScale - 1.0f);
+
+	// Compute either the additional gravity above stock PhysX gravity, or the
+	// total gravity combined depending on what has been requested.
+
+	if (totalGravity == true)
+	{
+		force += worldGravity;
+	}
+
+	// Always multiply by mass so its consistent.
+
+	force *= Physics.CurrentMass;
+
+	return FVector(0.0f, 0.0f, force);
+}
+
+/**
+* Get the drag force based on the velocity given and the vehicle's drag coefficient.
+***********************************************************************************/
+
+FVector ABaseVehicle::GetDragForceFor(FVector velocity) const
+{
+	int32 level = GameState->GetDifficultyLevel();
+
+#if WITH_EDITOR
+	if (PlayGameMode != nullptr &&
+		PlayGameMode->GameStateOverrides != nullptr &&
+		PlayGameMode->GameStateOverrides->SeriousBotBehaviour == true)
+	{
+		level = 2;
+	}
+#endif // WITH_EDITOR
+
+	float scale = GameState->GeneralOptions.GetDragScale(level) * RaceState.DragScale;
+
+	// The drag coefficient is scaled to meters, so we have to convert back and forth
+	// here otherwise the squaring with velocity.Size() will fail.
+
+	velocity = FMathEx::CentimetersToMeters(velocity);
+
+	// The main drag calculation using a drag coefficient with some scaling for
+	// difficulty level and catchup rubber-banding if switched on.
+
+	FVector drag = velocity * -(DragCoefficient * scale) * velocity.Size();
+
+	// Note that DragCoefficient is a constant per-vehicle here, and works just fine.
+	// But you could just as easily compute it from the vehicle body's orientation
+	// and exposed surface area to the incoming air stream, and maybe even air density
+	// which changes with temperature and altitude too.
+
+	return FMathEx::MetersToCentimeters(drag);
+}
+
+/**
+* Get the rolling resistance force based on the velocity given and the vehicle's
+* rolling resistance coefficient.
+***********************************************************************************/
+
+FVector ABaseVehicle::GetRollingResistanceForceFor(float speed, const FVector& velocityDirection, const FVector& xdirection) const
+{
+	if (speed > KINDA_SMALL_NUMBER)
+	{
+		// Note that this rolling resistance is just for effect and not physically correct.
+		// As we don't have a real piston-engined vehicle there is no real rolling resistance
+		// to model, so we just emulate it here.
+
+		// Negate the dot product to push against the vehicle's velocity rather than with it.
+
+		float scale = -FVector::DotProduct(xdirection, velocityDirection);
+
+		// Cap the rolling resistance so it's not too harsh at higher speeds.
+
+		// This capping is not physically correct at all, but gave us the behavior we wanted
+		// for GRIP. Ideally, this value of 5 should be in the VehicleEngineModel somewhere.
+
+		scale *= FMath::Min(5.0f, speed * VehicleEngineModel->EngineBrakingCoefficient);
+
+		// Scale with the number of wheels on the ground.
+
+		float wheelRatio = (Wheels.Wheels.Num() > 0) ? Wheels.NumWheelsInContact / Wheels.Wheels.Num() : 1.0f;
+
+		return xdirection * scale * Physics.CurrentMass * wheelRatio;
+	}
+
+	return FVector::ZeroVector;
+}
+
+/**
+* Get the current jet engine power.
+***********************************************************************************/
+
+float ABaseVehicle::GetJetEnginePower(int32 numWheelsInContact, const FVector& xdirection)
+{
+	float enginePower = Propulsion.CurrentJetEnginePower;
+
+	if (IsReversing() == true)
+	{
+		enginePower *= 1.0f - FMath::Pow(FMath::Min((GetSpeedKPH() / (GetGearSpeedRange() * 1.8f)), 1.0f), 4.0f);
+	}
+
+	return enginePower;
+}
+
+/**
+* Get the down force based on the velocity of the vehicle and its down force
+* coefficient.
+***********************************************************************************/
+
+FVector ABaseVehicle::GetDownForce()
+{
+	// Note that down-force is an inaccurate term here, but most players would perceive
+	// the effect we produce as what they know to be down-force. Really what it's doing
+	// though it having the vehicles act as if they're magnetized towards their nearest
+	// driving surface. The more upside-down the surface is, the more magnetism produced
+	// in order to counter gravity.
+
+	// Force is computed from speed.
+
+	float force = 1.0f;
+	float speed = GetSpeedKPH();
+	const float maxSpeed = 600.0f;
+
+	if (speed < maxSpeed)
+	{
+		// Scale the force up to 1 using a sine curve starting at 0.
+
+		force = FMath::Sin((speed / maxSpeed) * PI * 0.5f);
+		force *= force;
+	}
+
+	// The direction of the driving surface for the vehicle.
+
+	FVector direction = GetSurfaceDirection();
+
+	// Scale to 0 when driving surface is underneath the vehicle and 1 when it is above.
+	// We want to push harder when we're working against gravity than when working with it.
+
+	float scale = FMathEx::NegativePow(((direction.Z * 0.5f) + 0.5f), 0.5f);
+
+	float maxDistance = 4.0f * 100.0f;
+	float maxWheelRadius = GetMaxWheelRadius();
+
+	// No down force if one of the axles is properly airborne, or more than
+	// maxDistance away from the driving surface.
+
+	bool axleAirborne[2] = { true, true };
+	float averageSamples = 0.0f;
+	float averageCompression = 0.0f;
+
+	for (FVehicleWheel& wheel : Wheels.Wheels)
+	{
+		float distance = wheel.GetActiveSensor().GetSurfaceDistance();
+
+		averageSamples += 1.0f;
+		averageCompression += wheel.GetActiveSensor().GetNormalizedCompression();
+
+		if (distance != 0.0f &&
+			FMath::Max(0.0f, distance - wheel.Radius) < maxDistance)
+		{
+			axleAirborne[(wheel.HasFrontPlacement() == true) ? 0 : 1] = false;
+		}
+	}
+
+	// Apply less down force when springs are highly compressed, as this will help with cornering in tunnels.
+	// Not strictly necessary, and not part of the normal down force model, so here it's just used to ameliorate
+	// the forces and try not to push the vehicle hard against a surface when it's already been pressed hard
+	// against a surface.
+
+	averageCompression = FMath::Clamp((averageCompression / averageSamples) - 1.25f, 0.0f, 1.0f);
+
+	scale = FMath::Lerp(scale, scale * 0.666f, averageCompression);
+
+	float invDistanceScale = 1.0f;
+
+	if (axleAirborne[0] == false &&
+		axleAirborne[1] == false)
+	{
+		// If both axes are close enough the driving surface then calculate how far away the driving surface
+		// is from the vehicle in general.
+
+		float distance = GetSurfaceDistance(true);
+
+		// Scale with wheel surface distance from the driving surface, losing all force at maxDistance away.
+
+		// Only if we're in effect for down force do we calculate an inverse scale for it.
+		// 0 for full force, and 1 for no force.
+
+		invDistanceScale = FMath::Max(0.0f, distance - maxWheelRadius);
+		invDistanceScale = FMath::Min(invDistanceScale / maxDistance, 1.0f);
+		invDistanceScale = FMath::Pow(invDistanceScale, 4.0f);
+	}
+
+	// Apply all the constituents together.
+
+	force = force * Physics.GravityStrength * scale * (1.0f - invDistanceScale) * 2.0f;
+
+	return direction * force;
+}
+
+/**
+* Get the predicted velocity based on recorded velocity information.
+***********************************************************************************/
+
+FVector ABaseVehicle::GetPredictedVelocity() const
+{
+	// When hard cornering the vehicle's velocity lags behind its apparent velocity.
+	// So here we're trying to predict the apparent velocity based on the most recent
+	// velocity data instead. This can be useful when being targeted by missiles and
+	// they're maneuvering towards the vehicle with some lead applied.
+
+	FVector velocity = Physics.VelocityData.Velocity;
+	FVector offset = Physics.DirectionVsVelocityList.GetMeanValue(Physics.Timing.TickSum - 0.25f);
+	FVector direction = Physics.VelocityData.VelocityDirection.ToOrientationQuat().RotateVector(offset) + Physics.VelocityData.VelocityDirection; direction.Normalize();
+
+	return direction * velocity.Size();
+}
+
+#pragma endregion VehicleBasicForces
 
 #if WITH_PHYSX
 #if GRIP_ENGINE_PHYSICS_MODIFIED
