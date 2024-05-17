@@ -70,6 +70,36 @@ public:
 	float Value = 0.0f;
 };
 
+#pragma region ElectricalEffects
+
+/**
+* Structure for a location and probability of being selected.
+***********************************************************************************/
+
+struct FLocationProbability
+{
+public:
+
+	FLocationProbability() = default;
+
+	FLocationProbability(const FVector& location, float probability, const FVector& hitNormal)
+		: Location(location)
+		, Probability(probability)
+		, HitNormal(hitNormal)
+	{ }
+
+	// The world location.
+	FVector Location = FVector::ZeroVector;
+
+	// The probability of being selected.
+	float Probability = 0.0f;
+
+	// The surface normal when hit.
+	FVector HitNormal = FVector::UpVector;
+};
+
+#pragma endregion ElectricalEffects
+
 /**
 *
 ***********************************************************************************/
@@ -190,6 +220,144 @@ public:
 	// Are strikes currently enabled?
 	bool StrikesEnabled = true;
 
+#pragma region ElectricalEffects
+
+	// Initialize the component.
+	virtual void InitializeComponent() override;
+
+	// Do some initialization when the game is ready to play.
+	virtual void BeginPlay() override
+	{
+		Super::BeginPlay();
+
+		Timer = -InitialDelay.Get(); ThisLifeTime = LifeTime.GetRandom(); RespawnAt = ThisLifeTime + PostDelay.GetRandom();
+	}
+
+	// Do the regular update tick.
+	virtual void TickComponent(float deltaSeconds, enum ELevelTick tickType, FActorComponentTickFunction* thisTickFunction) override;
+
+	// Enable or disable the streak.
+	void Enable(bool enable)
+	{ Enabled = enable; }
+
+	// Get the geometry used to render this visual effect.
+	UProceduralMeshComponent* GetGeometry() const
+	{ return Geometry; }
+
+	// Get the current brightness of the electricity.
+	float GetBrightness() const
+	{ return (Timer >= 0.0f && Timer < ThisLifeTime) ? SetStreakLifeTimeAlpha.CurrentValue : 0.0f; }
+
+	// Set the locations used in the generation of electricity.
+	void SetLocations(const FVector& startLocation, const TArray<FLocationProbability>& endLocations)
+	{ StartLocation = startLocation; EndLocations = endLocations; LocationsSet = true; }
+
+	// Has the generation of electricity completed?
+	bool HasFinished() const
+	{ return (Timer >= RespawnAt); }
+
+	// Postpone electrical generation for a duration.
+	void Postpone(float duration)
+	{ Timer = -duration; }
+
+	// Get the current end location for electrical generation.
+	FLocationProbability& GetCurrentEndLocation()
+	{ return CurrentEndLocation; }
+
+	// Generate the electrical streak, locations in world space.
+	void GenerateElectricity(FVector start, FVector end, FVector& hitNormal);
+
+	// Inherit the properties of another electrical streak component.
+	void Inherit(UElectricalStreakComponent* other);
+
+	// The base alpha scale.
+	float BaseAlpha;
+
+protected:
+
+	// Generate the electrical streak.
+	void GenerateElectricity();
+
+	// Material setters for the effect to speed its update.
+	FMathEx::FMaterialVectorParameterSetter SetFlareColour;
+	FMathEx::FMaterialScalarParameterSetter SetFlareAlpha;
+	FMathEx::FMaterialScalarParameterSetter SetFlareWidth;
+	FMathEx::FMaterialScalarParameterSetter SetFlareAspectRatio;
+	FMathEx::FMaterialScalarParameterSetter SetFlareRotate;
+	FMathEx::FMaterialVectorParameterSetter SetStreakColour;
+	FMathEx::FMaterialVectorParameterSetter SetStreakEndColour;
+	FMathEx::FMaterialScalarParameterSetter SetStreakAnimationTimer;
+	FMathEx::FMaterialScalarParameterSetter SetStreakDistanceTraveled;
+	FMathEx::FMaterialScalarParameterSetter SetStreakLifeTime;
+	FMathEx::FMaterialScalarParameterSetter SetStreakInvLifeTime;
+	FMathEx::FMaterialScalarParameterSetter SetStreakLifeTimeAlpha;
+
+	// Geometry for the streak.
+	TArray<FVector> Vertices;
+	TArray<int32> Triangles;
+	TArray<FVector> Normals;
+	TArray<FVector2D> UV0;
+	TArray<FColor> Colours;
+	TArray<FProcMeshTangent> Tangents;
+
+	// Geometry for the flare.
+	TArray<FVector> FlareVertices;
+	TArray<int32> FlareTriangles;
+	TArray<FVector> FlareNormals;
+	TArray<FVector2D> FlareUV0;
+	TArray<FColor> FlareColours;
+	TArray<FProcMeshTangent> FlareTangents;
+
+	// Structure for a line segment used in the generation of electricity.
+	struct FLineSegment
+	{
+	public:
+
+		FLineSegment()
+		{ }
+
+		FLineSegment(const FVector& start, const FVector& end)
+			: Start(start)
+			, End(end)
+		{ }
+
+		FVector Start;
+
+		FVector End;
+	};
+
+	// The line segments used in the generation of electricity.
+	TArray<FLineSegment> Segments[2];
+
+	// Is this component currently enabled?
+	bool Enabled = true;
+
+	// Timer used for the lifetime.
+	float Timer = 0.0f;
+
+	// The current lifetime of the electricity.
+	float ThisLifeTime = 0.0f;
+
+	// The time to respawn the electricity.
+	float RespawnAt = 0.0f;
+
+	// The start location of the electricity.
+	FVector StartLocation = FVector::ZeroVector;
+
+	// The current end location of the electricity.
+	FLocationProbability CurrentEndLocation;
+
+	// The end locations for the electricity.
+	TArray<FLocationProbability> EndLocations;
+
+	// Have the locations been set yet?
+	bool LocationsSet = false;
+
+	// The number of vertices used at each joint to render electrical streaks.
+	static const int32 NumJointVertices = 2;
+
+#pragma endregion ElectricalEffects
+
 	// The particle system for the effect.
 	UPROPERTY(Transient)
 		UProceduralMeshComponent* Geometry = nullptr;
@@ -270,6 +438,31 @@ public:
 	// Strike with electricity.
 	UFUNCTION(BlueprintImplementableEvent, Category = Generator)
 		void Strike(const FVector& location, const FVector& surfaceNormal, const FVector& strikeNormal, const FVector& mergedNormal, const FVector& reflectionNormal);
+
+#pragma region ElectricalEffects
+
+protected:
+
+	// Do some initialization when the game is ready to play.
+	virtual void BeginPlay() override;
+
+	// Do the regular update tick.
+	virtual void Tick(float deltaSeconds) override;
+
+private:
+
+	TArray<FLocationProbability> EndLocations;
+
+	// The original size of the flare.
+	float FlareSize = 0.0f;
+
+	// The original intensity of the light at the start location.
+	float StartLocationLightIntensity = 0.0f;
+
+	// The original intensity of the light at the end location.
+	float EndLocationLightIntensity = 0.0f;
+
+#pragma endregion ElectricalEffects
 
 	// The streaks to use to render the electricity.
 	UPROPERTY(Transient)

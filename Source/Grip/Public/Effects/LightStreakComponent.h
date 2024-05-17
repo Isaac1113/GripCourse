@@ -183,6 +183,148 @@ public:
 	// Set the controlling global amount for alpha and lifetime.
 	void SetGlobalAmount(float alphaAmount, float lifeTimeAmount);
 
+#pragma region VehicleLightStreaks
+
+	// Initialize the component.
+	virtual void InitializeComponent() override;
+
+	// Do the regular update tick.
+	virtual void TickComponent(float deltaSeconds, enum ELevelTick tickType, FActorComponentTickFunction* thisTickFunction) override;
+
+	// Enable or disable the streak.
+	void Enable(bool enable)
+	{ Enabled = enable; }
+
+	// Update the streak.
+	void Update(float deltaSeconds);
+
+	// Set whether the automatically add points as the parent actor moves around the world.
+	void SetAddPoints(bool addPoints)
+	{ AddPoints = addPoints; }
+
+	// Add a new point to the streak.
+	void AddPoint(float alpha, bool force = false);
+
+	// Get the geometry used to render this visual effect.
+	UProceduralMeshComponent* GetGeometry() const
+	{ return Geometry; }
+
+	// Set whether a component (and its children) can be seen by their owner.
+	void SetOwnerNoSee(bool bNewOwnerNoSee) const
+	{ if (Geometry != nullptr) Geometry->SetOwnerNoSee(bNewOwnerNoSee); }
+
+	// Set whether a component (and its children) can be seen only by their owner.
+	void SetOnlyOwnerSee(bool bNewOwnerNoSee) const
+	{ if (Geometry != nullptr) Geometry->SetOnlyOwnerSee(bNewOwnerNoSee); }
+
+	// Is this light streak awake and currently visible?
+	bool IsAwake() const
+	{ return Alpha != 0.0f || LifeTime != 0.0f || DormantTimer < BaseLifeTime; }
+
+protected:
+
+	// Switch to a new section for adding new points.
+	void SwitchSection(bool reset, bool empty);
+
+	// Calculate the alpha value for a point.
+	float CalculateAlpha() const;
+
+	// Get a noise value.
+	float Noise(float value) const;
+
+	// Material setters for the effect to speed its update.
+	FMathEx::FMaterialVectorParameterSetter SetFlareColour;
+	FMathEx::FMaterialScalarParameterSetter SetFlareAlpha;
+	FMathEx::FMaterialScalarParameterSetter SetFlareWidth;
+	FMathEx::FMaterialScalarParameterSetter SetFlareAspectRatio;
+	FMathEx::FMaterialScalarParameterSetter SetFlareRotate;
+	FMathEx::FMaterialVectorParameterSetter SetStreakColour;
+	FMathEx::FMaterialVectorParameterSetter SetStreakEndColour;
+	FMathEx::FMaterialScalarParameterSetter SetStreakAnimationTimer;
+	FMathEx::FMaterialScalarParameterSetter SetStreakDistanceTraveled;
+	FMathEx::FMaterialScalarParameterSetter SetStreakLifeTime;
+	FMathEx::FMaterialScalarParameterSetter SetStreakInvLifeTime;
+	FMathEx::FMaterialVectorParameterSetter SetCentreFlareColour;
+	FMathEx::FMaterialScalarParameterSetter SetCentreFlareAlpha;
+	FMathEx::FMaterialScalarParameterSetter SetCentreFlareWidth;
+	FMathEx::FMaterialScalarParameterSetter SetCentreFlareAspectRatio;
+	FMathEx::FMaterialScalarParameterSetter SetCentreFlareRotate;
+
+	// Geometry for the streak.
+	TArray<FVector> Vertices;
+	TArray<int32> Triangles;
+	TArray<FVector> Normals;
+	TArray<FVector2D> UV0;
+	TArray<FColor> Colours;
+	TArray<FProcMeshTangent> Tangents;
+
+	// Geometry for the flare.
+	TArray<FVector> FlareVertices;
+	TArray<int32> FlareTriangles;
+	TArray<FVector> FlareNormals;
+	TArray<FVector2D> FlareUV0;
+	TArray<FColor> FlareColours;
+	TArray<FProcMeshTangent> FlareTangents;
+
+	// Is this component currently enabled?
+	bool Enabled = true;
+
+	// Is this component currently adding points on parent actor movement?
+	bool AddPoints = true;
+
+	// The number of points that have been added with zero alpha.
+	int32 NumZeroAlpha = 0;
+
+	// Timer used for the lifetime.
+	float Timer = 0.0f;
+
+	// Last locations used for computing the geometry.
+	FVector LastLocations[3];
+
+	// The number of points added to the current geometry section.
+	int32 NumPointsAdded = 0;
+
+	// The time the last point was added.
+	float LastPointAdded = 0.0f;
+
+	// The current index number into the current geometry section.
+	int32 StartIndex = 0;
+
+	// The maximum number of vertices in a geometry section.
+	int32 MaxVertices = 0;
+
+	// The index into the current geometry section that we're adding points at.
+	int32 SectionIndex = 0;
+
+	// The distance the parent of this light streak has traveled while it's been adding points.
+	float DistanceTraveled = 0.0f;
+
+	// Noise function for generating random chaos to the game.
+	FPerlinNoise PerlinNoise;
+
+	// The time when a section was marked as no longer being updated, or < 0 if ready to be reused.
+	TArray<float> SectionsDisusedAt;
+
+	// The index number of the current streak section being used.
+	int32 StreakSectionIndex = 0;
+
+	// How long the streak has been dormant for.
+	float DormantTimer = 0.0f;
+
+	// The base alpha scale.
+	float BaseAlpha;
+
+	// The base life time of the streak.
+	float BaseLifeTime;
+
+	// The number of vertices used at each joint to render electrical streaks.
+	static const int32 NumJointVertices = 2;
+
+	// The number of joints per geometry section.
+	static const int32 NumJointsPerSection = 64;
+
+#pragma endregion VehicleLightStreaks
+
 	// The particle system for the effect.
 	UPROPERTY(Transient)
 		UProceduralMeshComponent* Geometry = nullptr;
@@ -221,4 +363,12 @@ public:
 
 	// Construct a vehicle light streak.
 	UVehicleLightStreakComponent();
+
+#pragma region VehicleLightStreaks
+
+	// Do the regular update tick.
+	virtual void TickComponent(float deltaSeconds, enum ELevelTick tickType, FActorComponentTickFunction* thisTickFunction) override;
+
+#pragma endregion VehicleLightStreaks
+
 };

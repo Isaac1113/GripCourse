@@ -245,6 +245,51 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 
 #pragma endregion VehicleBasicForces
 
+#pragma region VehicleBidirectionalTraction
+
+	// Traction control, switching between biasing the grip more to the front / rear depending on the
+	// orientation of the vehicle compared to its velocity vector. This is to fix the reversing problem
+	// we have previously where the front-end would skid around uncontrollably. Now the vehicle is as
+	// controllable going backwards and it is forwards.
+
+	float smoothedSteeringBias = 1.0f;
+
+	if (IsPracticallyGrounded() == true)
+	{
+		// The bias is computed from the facing direction versus the velocity vector. So +1 for
+		// pointing in the direction we're moving, and -1 if pointing in the opposite direction.
+
+		smoothedSteeringBias = FVector::DotProduct(GetFacingDirection(), GetVelocityOrFacingDirection());
+
+		// Reverse driving only goes up to 200 kph max under normal circumstances, so we only need the
+		// benefit of this bias under that speed. Above that speed we transition the bias back to fully
+		// forwards for normal driving, the reason being it helps us to recover from crashes more quickly
+		// as the only reason you'd be facing backwards and traveling that fast is if you'd just crashed.
+		// And if you've just crashed, strong rear grip helps the vehicle naturally recover more quickly.
+
+		float forwardRatio = FMathEx::GetRatio(GetSpeedKPH(), 200.0f, 300.0f);
+
+		smoothedSteeringBias = FMath::Lerp(smoothedSteeringBias, 1.0f, forwardRatio);
+	}
+
+	// Smooth the steering bias, specifically to allow the front wheels time to kick back around after
+	// a bad landing. If we transition the bias too quickly, then we lose that game-play advantage.
+
+	float smoothingRatio = FMathEx::GetSmoothingRatio(0.9f, deltaSeconds);
+
+	Physics.SmoothedSteeringBias = FMath::Lerp(smoothedSteeringBias, Physics.SmoothedSteeringBias, smoothingRatio);
+
+	// Apply a power curve to the bias so that it moves quickly between the two extremes.
+
+	Physics.SteeringBias = FMathEx::NegativePow(Physics.SmoothedSteeringBias, 0.25f);
+
+	// We lose all bias when under 25 kph, and we have full bias above 50 kph - speeds and subsequent
+	// control effects derived from play-testing.
+
+	Physics.SteeringBias = FMath::Lerp(0.0f, Physics.SteeringBias, FMathEx::GetRatio(GetSpeedKPH(), 25.0f, 50.0f));
+
+#pragma endregion VehicleBidirectionalTraction
+
 #pragma region VehicleGrip
 
 	// Now, let's deal with all of the wheel forces.
@@ -405,23 +450,68 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 
 			if (TireFrictionModel->Model == ETireFrictionModel::Arcade)
 			{
-				if (wheel.HasRearPlacement() == true &&
-					absWheelRPS > KINDA_SMALL_NUMBER)
+
+#pragma region VehicleBidirectionalTraction
+
+				if (absWheelRPS > KINDA_SMALL_NUMBER)
 				{
-					float stablisingGrip = stablisingGripVsSpeed;
+					float stablisingGrip = 1.0f;
 
-					// Usually stablisingGrip gives more grip on the rear end to provide solid control.
+					check(FMath::IsNaN(stablisingGripVsSpeed) == false);
+					check(FMath::IsNaN(Physics.SteeringBias) == false);
 
-					// Handbrake turn, reducing any additional grip if we actively want the
+					// The code biases grip towards the "rear" wheels depending on the direction of travel.
+					// This gives us good steering response no matter what the vehicle is doing and enables
+					// us to steer well when reversing where previously it wasn't possible.
+
+					if (wheel.HasRearPlacement() == true)
+					{
+						// This is a rear wheel.
+
+						if (Physics.SteeringBias > 0.0f)
+						{
+							// We're facing the direction we're traveling in.
+
+							stablisingGrip = FMath::Lerp(1.0f, stablisingGripVsSpeed, Physics.SteeringBias);
+						}
+					}
+					else
+					{
+						// This is a front wheel.
+
+						if (Physics.SteeringBias < 0.0f)
+						{
+							// We're not facing the direction we're traveling in.
+
+							stablisingGrip = FMath::Lerp(1.0f, stablisingGripVsSpeed, -Physics.SteeringBias);
+						}
+					}
+
+					// Usually stablisingGrip applies more grip on the end opposite the driving
+					// direction to provide solid control - the rear end when driving forwards
+					// for example.
+
+					// Handbrake turn, reducing that additional grip if we actively want the
 					// vehicle to spin around.
 
-					stablisingGrip = FMath::Lerp(stablisingGrip, HandBrakeRearGripRatio, brakePosition * FMath::Abs(steeringPosition));
+					if ((wheel.HasRearPlacement() == true && Physics.BrakingSteeringBias > 0.0f) ||
+						(wheel.HasRearPlacement() == false && Physics.BrakingSteeringBias < 0.0f))
+					{
+						// We have different ratios for handbrake turns depending on whether this
+						// is a front or rear wheel, to make J turns more achievable.
+
+						float handbrakeGripRatio = (wheel.HasRearPlacement() == true) ? HandBrakeRearGripRatio : HandBrakeRearGripRatio * 0.25f;
+
+						stablisingGrip = FMath::Lerp(stablisingGrip, handbrakeGripRatio, brakePosition * FMath::Abs(steeringPosition));
+					}
 
 					wheel.LateralForceVector *= stablisingGrip;
 
 					check(FMath::IsNaN(stablisingGrip) == false);
 					check(wheel.LateralForceVector.ContainsNaN() == false);
 				}
+
+#pragma endregion VehicleBidirectionalTraction
 
 				// Now finally apply the lateral force.
 

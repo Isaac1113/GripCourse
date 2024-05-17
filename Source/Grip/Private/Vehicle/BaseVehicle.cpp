@@ -1874,8 +1874,16 @@ void ABaseVehicle::UpdateSteering(float deltaSeconds, const FVector& xdirection,
 	float rfb = SteeringModel->FrontSteeringVsSpeed.GetRichCurve()->Eval(speed);
 	float rbb = SteeringModel->BackSteeringVsSpeed.GetRichCurve()->Eval(speed);
 
-	float rf = rfb;
-	float rb = rbb;
+#pragma region VehicleBidirectionalTraction
+
+	// With VehicleAutoDirectionTraction, the steering characteristics between front and
+	// rear wheels get reversed according to Physics.SteeringBias. And this is set between
+	// -1 and +1, with +1 being driving forwards and -1 being driving backwards.
+
+	float rf = FMath::Lerp(rbb, rfb, Physics.SteeringBias * 0.5f + 0.5f);
+	float rb = FMath::Lerp(rfb, rbb, Physics.SteeringBias * 0.5f + 0.5f);
+
+#pragma endregion VehicleBidirectionalTraction
 
 	rf = FMath::Max(rf, 0.001f);
 	rb = FMath::Max(rb, 0.001f);
@@ -1885,8 +1893,12 @@ void ABaseVehicle::UpdateSteering(float deltaSeconds, const FVector& xdirection,
 	float mfb = SteeringModel->FrontWheelsMaxSteeringAngle;
 	float mbb = SteeringModel->BackWheelsMaxSteeringAngle;
 
-	float mf = mfb;
-	float mb = mbb;
+#pragma region VehicleBidirectionalTraction
+
+	float mf = FMath::Lerp(mbb, mfb, Physics.SteeringBias * 0.5f + 0.5f);
+	float mb = FMath::Lerp(mfb, mbb, Physics.SteeringBias * 0.5f + 0.5f);
+
+#pragma endregion VehicleBidirectionalTraction
 
 	Wheels.BackSteeringAngle = steeringPosition * mb * rb;
 	Wheels.FrontSteeringAngle = -steeringPosition * mf * rf;
