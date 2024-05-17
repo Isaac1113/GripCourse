@@ -1471,6 +1471,16 @@ private:
 
 #pragma endregion VehicleSurfaceEffects
 
+#pragma region VehicleSurfaceImpacts
+
+	// Update effects because of hard compression of the springs.
+	void UpdateHardCompression();
+
+	// Spawn a new surface impact effect.
+	void SpawnSurfaceImpactEffect(const FVector& hitLocation, const FVector& hitNormal, const FHitResult& hitResult, const FVector& velocity, float controllerForce, bool tireImpact);
+
+#pragma endregion VehicleSurfaceImpacts
+
 #pragma region PickupsAvailable
 
 public:

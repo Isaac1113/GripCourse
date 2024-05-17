@@ -80,6 +80,15 @@ ABaseVehicle::ABaseVehicle()
 		Elimination.AlertSound = asset.Object;
 	}
 
+#pragma region VehicleSurfaceImpacts
+
+	{
+		static ConstructorHelpers::FObjectFinder<UParticleSystem> asset(TEXT("ParticleSystem'/Game/Vehicles/Effects/VehicleImpacts/PS_HardFloorLanding.PS_HardFloorLanding'"));
+		HardImpactEffect = asset.Object;
+	}
+
+#pragma endregion VehicleSurfaceImpacts
+
 	WheelAssignments.Emplace(FWheelAssignment(("F_L_T"), EWheelPlacement::Front, 80.0f, 85.0f, 2.0f, 10.0f));
 	WheelAssignments.Emplace(FWheelAssignment(("F_R_T"), EWheelPlacement::Front, 80.0f, 85.0f, 2.0f, 10.0f));
 	WheelAssignments.Emplace(FWheelAssignment(("B_L_T"), EWheelPlacement::Rear, 80.0f, 85.0f, 2.0f, 10.0f));
@@ -584,6 +593,12 @@ void ABaseVehicle::Tick(float deltaSeconds)
 
 #pragma endregion VehicleBasicForces
 
+#pragma region VehicleSurfaceImpacts
+
+	UpdateHardCompression();
+
+#pragma endregion VehicleSurfaceImpacts
+
 #pragma region VehicleSurfaceEffects
 
 	UpdateSurfaceEffects(deltaSeconds);
@@ -613,6 +628,64 @@ void ABaseVehicle::NotifyHit(class UPrimitiveComponent* thisComponent, class AAc
 
 	if (hitResult.IsValidBlockingHit() == true)
 	{
+
+#pragma region VehicleSurfaceImpacts
+
+		if (PlayGameMode != nullptr &&
+			PlayGameMode->PastGameSequenceStart() == true)
+		{
+			if (DrivingSurfaceImpactCharacteristics != nullptr &&
+				normalForce.Size() > ImpactEffectNormalForceThreshold)
+			{
+				// If the impact force is strong enough then spawn an impact effect.
+
+				if (VehicleClock - Physics.LastHit > 0.25f)
+				{
+					Physics.LastHit = VehicleClock;
+
+					// Calculate the relative velocities of the two components involved in this collision.
+
+					ABaseVehicle* otherVehicle = Cast<ABaseVehicle>(otherComponent->GetOwner());
+
+					FVector v0 = VehicleMesh->GetPhysicsLinearVelocity();
+					FVector v1 = (otherVehicle != nullptr) ? otherVehicle->VehicleMesh->GetPhysicsLinearVelocity() : otherComponent->GetComponentVelocity();
+					FVector velocity = (v0.SizeSquared() < v1.SizeSquared()) ? v0 : v1;
+
+					if (velocity.IsNearlyZero() == false)
+					{
+						// As long as the lowest velocity isn't zero then take the highest instead.
+						// Not sure why, but the velocity taken by the effect is not keeping up with
+						// the vehicle even when taking the highest, let alone the lowest, but it
+						// seems to fit better in any event.
+
+						velocity = (v0.SizeSquared() > v1.SizeSquared()) ? v0 : v1;
+					}
+
+					if (otherVehicle != nullptr)
+					{
+						// If what we hit was another vehicle then calculate a new hit normal based
+						// on the launch direction of this vehicle and the velocity vector. This will
+						// work better with vehicle / vehicle collisions, showing more of the effect.
+
+						FVector forward = velocity;
+
+						forward.Normalize();
+
+						hitNormal = GetLaunchDirection();
+						hitNormal += forward * 0.5f;
+
+						hitNormal.Normalize();
+					}
+
+					// Finally spawn the surface impact effect with all of the relevant data.
+
+					SpawnSurfaceImpactEffect(hitLocation, hitNormal, hitResult, velocity, normalForce.Size() / 50000000.0f, false);
+				}
+			}
+		}
+
+#pragma endregion VehicleSurfaceImpacts
+
 	}
 }
 
@@ -2329,6 +2402,115 @@ float ABaseVehicle::Noise(float value) const
 }
 
 #pragma endregion VehicleSurfaceEffects
+
+#pragma region VehicleSurfaceImpacts
+
+/**
+* Update effects because of hard compression of the springs.
+***********************************************************************************/
+
+void ABaseVehicle::UpdateHardCompression()
+{
+	if (Wheels.HardCompression == true)
+	{
+		if (PlayGameMode != nullptr &&
+			PlayGameMode->PastGameSequenceStart() == true)
+		{
+			if (GetSpeedKPH() > 400.0f &&
+				HardImpactEffect != nullptr &&
+				(FMath::Rand() & 1) == 0)
+			{
+				FVector direction = GetDirection();
+				FVector velocity = GetVelocityOrFacingDirection();
+
+				if (FVector::DotProduct(direction, velocity) > 0.9f)
+				{
+					// If we're facing roughly the direction we're traveling, then we'll spawn an undercarriage
+					// sparks effect.
+
+					for (FVehicleWheel& wheel : Wheels.Wheels)
+					{
+						if (wheel.IsInContact == true &&
+							wheel.HasRearPlacement() == true)
+						{
+							EGameSurface surfaceType = wheel.GetActiveSensor().GetGameSurface();
+
+							if (surfaceType == EGameSurface::Asphalt ||
+								surfaceType == EGameSurface::Rock ||
+								surfaceType == EGameSurface::Metal)
+							{
+								// We only want the effect if we're on a hard surface.
+
+								FRotator rotation = GetActorRotation();
+
+								if (IsFlipped() == true)
+								{
+									rotation.Roll += 180.0f;
+									rotation.Normalize();
+								}
+
+								UGameplayStatics::SpawnEmitterAtLocation(this, HardImpactEffect, GetSurfaceLocation(), rotation, true);
+
+								break;
+							}
+						}
+					}
+				}
+			}
+
+			ShakeCamera(0.2f);
+
+			ShakeController(0.7f, 0.15f, true, false, true, false, EDynamicForceFeedbackAction::Start);
+		}
+	}
+
+	Wheels.HardCompression = false;
+
+	if (DrivingSurfaceImpactCharacteristics != nullptr)
+	{
+		for (FVehicleWheel& wheel : Wheels.Wheels)
+		{
+			FVector location;
+
+			if (wheel.GetActiveSensor().IsCompressionEffectRequired(location) == true)
+			{
+				// If the contact sensor is in contact and was just compressed hard down,
+				// then spawn an impact effect for the tire.
+
+				SpawnSurfaceImpactEffect(location, wheel.GetActiveSensor().GetDirection() * -1.0f, wheel.GetActiveSensor().GetHitResult(), FVector::ZeroVector, 0.0f, true);
+			}
+		}
+	}
+}
+
+/**
+* Spawn an impact effect.
+***********************************************************************************/
+
+void ABaseVehicle::SpawnSurfaceImpactEffect(const FVector& hitLocation, const FVector& hitNormal, const FHitResult& hitResult, const FVector& velocity, float controllerForce, bool tireImpact)
+{
+	UPhysicalMaterial* material = hitResult.PhysMaterial.Get();
+
+	if (material != nullptr)
+	{
+		EGameSurface surfaceType = (EGameSurface)UGameplayStatics::GetSurfaceType(hitResult);
+		const FDrivingSurfaceImpact* surface = DrivingSurfaceImpactCharacteristics->Surfaces.FindByKey(surfaceType);
+
+		if (surface != nullptr)
+		{
+			UDrivingSurfaceImpactCharacteristics::SpawnImpact(this, *surface, tireImpact, hitLocation, hitNormal.Rotation(), velocity, GetDustColor(true), GameState->TransientGameState.MapLightingColor);
+		}
+	}
+
+	if (controllerForce > 0.0f)
+	{
+		ShakeCamera(FMath::Clamp(controllerForce, 0.0f, 0.25f));
+
+		ShakeController(0.7f, 0.15f, true, false, true, false, EDynamicForceFeedbackAction::Start);
+	}
+}
+
+#pragma endregion VehicleSurfaceImpacts
 
 #pragma region VehicleAnimation
 

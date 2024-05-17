@@ -98,4 +98,17 @@ public:
 	// Indicate that this component requires ticking.
 	UMovingParticleSystemComponent()
 	{ PrimaryComponentTick.bCanEverTick = true; }
+
+#pragma region VehicleSurfaceImpacts
+
+	// The linear velocity of the component, if any.
+	FVector Velocity;
+
+protected:
+
+	// Do the regular update tick, to move the particle system along.
+	virtual void TickComponent(float deltaSeconds, enum ELevelTick tickType, FActorComponentTickFunction* thisTickFunction) override;
+
+#pragma endregion VehicleSurfaceImpacts
+
 };
