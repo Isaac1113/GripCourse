@@ -496,6 +496,14 @@ struct FVehicleWheels
 
 	// The wheels attached to the vehicle.
 	TArray<FVehicleWheel> Wheels;
+
+#pragma region VehicleSurfaceEffects
+
+	// Timer used for coordinating surface effects.
+	float SurfaceEffectsTimer = 0.0f;
+
+#pragma endregion VehicleSurfaceEffects
+
 };
 
 #pragma endregion VehicleContactSensors
@@ -1420,6 +1428,48 @@ private:
 	{ return (Antigravity == true) ? false : ((removeGlitches == true) ? (Wheels.SkidAudioVolumeTarget > 0.25f || Wheels.SkidTimer > 0.0f) : (Wheels.SkidAudioVolumeTarget > 0.25f)); }
 
 #pragma endregion VehicleDrifting
+
+#pragma region VehicleSurfaceEffects
+
+public:
+
+	// Get the color for a dust trail.
+	FVector GetDustColor(bool noise);
+
+private:
+
+	// Get the alpha for a dust trail.
+	float GetDustAlpha(FVehicleWheel& wheel, bool noise, bool spinning, bool integrateContact, bool integrateTimer);
+
+	// Get the size for a dust trail.
+	FVector GetDustSize();
+
+	// Get the color for grit.
+	FVector GetGritColor();
+
+	// Get the amount of grit in a dust trail.
+	float GetGritAmount() const;
+
+	// Get the velocity for the grit in a dust trail.
+	FVector GetGritVelocity();
+
+	// Update the surface effects from the wheels.
+	void UpdateSurfaceEffects(float deltaSeconds);
+
+	// Spawn a new surface effect for a given wheel.
+	UParticleSystemComponent* SpawnDrivingSurfaceEffect(const FVehicleWheel& wheel, UParticleSystem* particleSystem);
+
+	// Compute a timer to co-ordinate the concurrent use of effects across vehicles.
+	void ComputeSurfaceEffectsTimer();
+
+	// Get a noise value.
+	float Noise(float value) const;
+
+	static const int32 DrivingSurfaceFullyVisible = 1;
+	static const int32 DrivingSurfaceFadeOutAt = 4;
+	static const int32 DrivingSurfaceMaxTime = 6;
+
+#pragma endregion VehicleSurfaceEffects
 
 #pragma region PickupsAvailable
 

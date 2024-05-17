@@ -155,4 +155,26 @@ public:
 
 	// Get the tire friction for a surface type.
 	float GetTireFriction(EGameSurface surfaceType) const;
+
+#pragma region VehicleSurfaceEffects
+
+	// Get the visual effect to use for a surface type and vehicle speed.
+	UParticleSystem* GetVisualEffect(EGameSurface surfaceType, float currentSpeed, bool wheelSkidding, bool wheelSpinning, bool fixedToWheel) const;
+
+	// Get the skidding sound for a surface type.
+	USoundCue* GetSkiddingSound(EGameSurface surfaceType) const;
+
+	// Is the effect for this surface type contactless?
+	bool GetContactless(EGameSurface surfaceType) const;
+
+private:
+
+	// Get the visual effect for a surface type.
+	UParticleSystem* GetVisualEffect(EGameSurface surfaceType, bool wheelSkidding, bool wheelSpinning, bool fixedToWheel) const;
+
+	// Get the min speed for a surface type.
+	float GetMinSpeed(EGameSurface surfaceType) const;
+
+#pragma endregion VehicleSurfaceEffects
+
 };

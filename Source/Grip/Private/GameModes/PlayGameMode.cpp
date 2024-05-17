@@ -146,6 +146,27 @@ void APlayGameMode::PostInitializeComponents()
 		{
 			FWorldFilter::IsValid(*actorItr, GlobalGameState);
 		}
+
+#pragma region VehicleSurfaceEffects
+
+		// Find the driving surface properties for this level and store them away in the game play setup.
+
+		for (TActorIterator<ADrivingSurfaceProperties> actorItr(GetWorld()); actorItr; ++actorItr)
+		{
+			if (FWorldFilter::IsValid(*actorItr, GlobalGameState) == true)
+			{
+				ADrivingSurfaceProperties* properties = *actorItr;
+
+				GlobalGameState->TransientGameState.MapBrightness = properties->AmbientBrightness;
+				GlobalGameState->TransientGameState.MapSurfaceColor = FVector(properties->SurfaceColor.R, properties->SurfaceColor.G, properties->SurfaceColor.B);
+				GlobalGameState->TransientGameState.MapLightingColor = FVector(properties->LightColor.R, properties->LightColor.G, properties->LightColor.B);
+
+				break;
+			}
+		}
+
+#pragma endregion VehicleSurfaceEffects
+
 	}
 }
 

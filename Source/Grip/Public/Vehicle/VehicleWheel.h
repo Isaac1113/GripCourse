@@ -21,6 +21,64 @@
 #include "vehicle/vehiclecontactsensor.h"
 #include "effects/drivingsurfacecharacteristics.h"
 
+#pragma region VehicleSurfaceEffects
+
+/**
+* A wheel driving surface visual effect.
+***********************************************************************************/
+
+struct FWheelDrivingSurface
+{
+	TWeakObjectPtr<UParticleSystemComponent> Surface;
+
+	// The timer used to co-ordinate the effect.
+	float Timer = 0.0f;
+
+	// The fade time to transition in / out.
+	float FadeTime = 0.0f;
+
+	// The alpha value for the coating on the tire.
+	float CoatingAlpha = 0.0f;
+
+	// Is the effect associated with skidding?
+	bool Skidding = false;
+
+	// Is the effect associated with wheel-spinning?
+	bool Spinning = false;
+
+	// Is the effect associated with launching?
+	bool Launched = false;
+
+	// Is the effect mandatory?
+	bool Mandatory = false;
+};
+
+/**
+* A combination of two wheel driving surface visual effects, so that we can
+* transition between them.
+***********************************************************************************/
+
+struct FWheelDrivingSurfaces
+{
+	// Destroy the particle system components for the surfaces.
+	void DestroyComponents();
+
+	// Setup the last component from the current one, ready to transition in a new one.
+	void SetupLastComponent(float fadeOutTime, bool destroy);
+
+	// Destroy the last component, called whenever it's clearly faded out.
+	void DestroyLastComponent();
+
+	// Discard a component, letting it die naturally one it has completed its visual effect.
+	static void DiscardComponent(FWheelDrivingSurface& surface);
+
+	// Two surfaces, one current and one transitioning out.
+	// Surfaces transition from index 0 to 1 as new surfaces are encountered.
+	FWheelDrivingSurface Surfaces[2];
+};
+
+#pragma endregion VehicleSurfaceEffects
+
 /**
 * A structure used to implement a vehicle wheel, or canards for antigravity
 * vehicles. The bolting of contact sensors to the vehicle is established through
@@ -81,6 +139,19 @@ public:
 	// Compare this wheel with a bone name, used by TArray::FindByKey.
 	bool operator == (const FName& boneName) const
 	{ return BoneName == boneName; }
+
+#pragma region VehicleSurfaceEffects
+
+	// The world or free components used primarily as trails, normally rear wheels only.
+	FWheelDrivingSurfaces SurfaceComponents;
+
+	// The local or fixed components wrapped around a wheel, normally all wheels.
+	FWheelDrivingSurfaces FixedSurfaceComponents;
+
+	// The mesh associated with the tire.
+	TWeakObjectPtr<UStaticMeshComponent> TireMesh;
+
+#pragma endregion VehicleSurfaceEffects
 
 private:
 

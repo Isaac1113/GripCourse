@@ -405,6 +405,26 @@ void ABaseVehicle::BeginPlay()
 		{
 			mesh->SetForcedLodModel(1);
 		}
+
+#pragma region VehicleSurfaceEffects
+
+		// Find all of the tire meshes for this vehicle and associate them with their
+		// relevant wheel structures.
+
+		if ((mesh != nullptr) &&
+			(mesh->GetName().EndsWith("Tire") || mesh->GetName().EndsWith("Tyre")))
+		{
+			FName boneName = mesh->GetAttachSocketName();
+			FVehicleWheel* wheel = Wheels.Wheels.FindByKey(boneName);
+
+			if (wheel != nullptr)
+			{
+				wheel->TireMesh = mesh;
+			}
+		}
+
+#pragma endregion VehicleSurfaceEffects
+
 	}
 
 	GetComponents(UParticleSystemComponent::StaticClass(), components);
@@ -468,6 +488,18 @@ void ABaseVehicle::BeginPlay()
 void ABaseVehicle::EndPlay(const EEndPlayReason::Type endPlayReason)
 {
 	UE_LOG(GripLog, Log, TEXT("ABaseVehicle::EndPlay"));
+
+#pragma region VehicleSurfaceEffects
+
+	// Destroy all of the wheel surface effects.
+
+	for (FVehicleWheel& wheel : Wheels.Wheels)
+	{
+		wheel.SurfaceComponents.DestroyComponents();
+		wheel.FixedSurfaceComponents.DestroyComponents();
+	}
+
+#pragma endregion VehicleSurfaceEffects
 
 	if (PlayGameMode != nullptr)
 	{
@@ -551,6 +583,12 @@ void ABaseVehicle::Tick(float deltaSeconds)
 	UpdatePowerAndGearing(deltaSeconds, xdirection, zdirection);
 
 #pragma endregion VehicleBasicForces
+
+#pragma region VehicleSurfaceEffects
+
+	UpdateSurfaceEffects(deltaSeconds);
+
+#pragma endregion VehicleSurfaceEffects
 
 	UpdateIdleLock();
 
@@ -1839,6 +1877,459 @@ void ABaseVehicle::PitchControl(float value)
 
 #pragma endregion VehicleControls
 
+#pragma region VehicleSurfaceEffects
+
+/**
+* Spawn a new surface effect for a given wheel.
+***********************************************************************************/
+
+UParticleSystemComponent* ABaseVehicle::SpawnDrivingSurfaceEffect(const FVehicleWheel& wheel, UParticleSystem* particleSystem)
+{
+	UParticleSystemComponent* component = NewObject<UParticleSystemComponent>(this);
+
+	if (component != nullptr)
+	{
+		// We don't auto-destroy components at this point because they often get reused
+		// quickly after they are apparently finished with.
+
+		component->bAutoActivate = true;
+		component->bAutoDestroy = false;
+
+		// Attach the new component to the wheel.
+
+		GRIP_VEHICLE_EFFECT_ATTACH(component, this, wheel.BoneName, false);
+
+		if (GRIP_POINTER_VALID(wheel.TireMesh) == true)
+		{
+			// Configure the coating mesh for the tire mesh.
+
+			static const FName CoatingSizeName("CoatingSize");
+
+			component->SetVectorParameter(CoatingSizeName, wheel.TireMesh->GetRelativeScale3D());
+			component->SetRelativeLocation(wheel.TireMesh->GetRelativeLocation());
+		}
+
+		// Assign the new effect.
+
+		component->SetTemplate(particleSystem);
+		component->SetOwnerNoSee(IsCockpitView());
+
+		// Don't forget to register the component.
+
+		component->RegisterComponent();
+
+		// And now activate it.
+
+		component->Activate();
+	}
+
+	return component;
+}
+
+/**
+* Update the surface effects from the wheels.
+***********************************************************************************/
+
+void ABaseVehicle::UpdateSurfaceEffects(float deltaSeconds)
+{
+	static const FName GritVelocityName("GritVelocity");
+	static const FName GritColorName("GritColour");
+	static const FName SoftDustSizeName("SoftDustSize");
+	static const FName GritAmountName("GritAmount");
+	static const FName DustAlphaName("DustAlpha");
+	static const FName DustColorName("DustColour");
+	static const FName DustInitialLocationName("DustInitialLocation");
+	static const FName CoatingAlphaName("CoatingAlpha");
+
+	if (DrivingSurfaceCharacteristics != nullptr)
+	{
+		if (LocalPlayerIndex >= 0 ||
+			PlayGameMode == nullptr ||
+			PlayGameMode->GetVehicles().Num() <= 6)
+		{
+			Wheels.SurfaceEffectsTimer = DrivingSurfaceFullyVisible;
+		}
+		else
+		{
+			Wheels.SurfaceEffectsTimer += deltaSeconds / 5.0f;
+
+			if (Wheels.SurfaceEffectsTimer >= DrivingSurfaceMaxTime)
+			{
+				Wheels.SurfaceEffectsTimer -= DrivingSurfaceMaxTime;
+			}
+		}
+
+		float fadeInTime = 1.0f;
+		float fadeOutTime = 1.5f;
+		float currentSpeed = GetSpeedKPH();
+		int32 maxSet = (Antigravity == true) ? 1 : 2;
+
+		for (FVehicleWheel& wheel : Wheels.Wheels)
+		{
+			for (int32 set = 0; set < maxSet; set++)
+			{
+				FWheelDrivingSurfaces& components = ((set == 0) ? wheel.SurfaceComponents : wheel.FixedSurfaceComponents);
+
+				if ((set == 1) ||
+					(wheel.HasRearPlacement() == true))
+				{
+					FWheelDrivingSurface& activeSurface = components.Surfaces[0];
+					FWheelDrivingSurface& previousSurface = components.Surfaces[1];
+
+					// Emitters only on the rear wheels for set 0, or all wheels for set 1.
+
+					EGameSurface surfaceType = wheel.GetActiveSensor().GetGameSurface();
+
+					// The effect, if any, that is already in use on this wheel.
+
+					UParticleSystem* currentEffect = (GRIP_POINTER_VALID(activeSurface.Surface) == true) ? activeSurface.Surface->Template : nullptr;
+
+					// Is there an effect currently running on this wheel?
+
+					bool currentIsActive = GRIP_POINTER_VALID(activeSurface.Surface);
+
+					if (surfaceType < EGameSurface::Num)
+					{
+						// Record the current material for later if we have one.
+
+						wheel.LastSurfaceContact = surfaceType;
+					}
+					else
+					{
+						if (currentIsActive == true &&
+							DrivingSurfaceCharacteristics->GetContactless(wheel.LastSurfaceContact) == true)
+						{
+							// Reuse the last material if its contactless and we don't have one already.
+
+							surfaceType = wheel.LastSurfaceContact;
+						}
+					}
+
+					// The effect, if any, we should be using on this surface.
+
+					UParticleSystem* wheelEffect = nullptr;
+
+					bool skidding = IsSkidding(true) && surfaceType != EGameSurface::Launched;
+					bool spinning = SpinningTheWheel() && surfaceType != EGameSurface::Launched;
+					bool mandatory = surfaceType == EGameSurface::Launched;
+
+					if (mandatory == true ||
+						Wheels.SurfaceEffectsTimer < DrivingSurfaceFadeOutAt)
+					{
+						wheelEffect = DrivingSurfaceCharacteristics->GetVisualEffect(surfaceType, currentSpeed, skidding, spinning, (set == 1));
+					}
+
+					float damageSmokeAlpha = 0.0f;
+
+					float wheelFadeOutTime = (currentIsActive == true && activeSurface.Launched == true) ? 3.0f : (currentIsActive == true && activeSurface.Spinning == true) ? 0.1f : fadeOutTime;
+
+					if ((wheelEffect != nullptr) &&
+						(currentEffect != wheelEffect || currentIsActive == false) &&
+						(damageSmokeAlpha == 0.0f))
+					{
+						// If we need to create a new effect, then do this now.
+						// First we setup the existing effect for fading out to make way
+						// for the new effect to fade in.
+
+						if (currentIsActive == true &&
+							wheel.HasRearPlacement() == true)
+						{
+							activeSurface.Surface->SetFloatParameter(GritAmountName, 0.0f);
+						}
+
+						components.SetupLastComponent(0.0f, true);
+
+						// Create a new effect.
+
+						activeSurface.Surface = SpawnDrivingSurfaceEffect(wheel, wheelEffect);
+
+						if (spinning == true ||
+							surfaceType == EGameSurface::Launched)
+						{
+							activeSurface.FadeTime = 0.1f;
+						}
+						else if (skidding == true)
+						{
+							activeSurface.FadeTime = 0.25f;
+						}
+						else
+						{
+							activeSurface.FadeTime = fadeInTime;
+						}
+
+						activeSurface.Timer = activeSurface.FadeTime;
+						activeSurface.Skidding = skidding;
+						activeSurface.Spinning = spinning;
+						activeSurface.Launched = surfaceType == EGameSurface::Launched;
+						activeSurface.Mandatory = mandatory;
+					}
+					else if ((wheelEffect == nullptr) &&
+						(currentIsActive == true))
+					{
+						// If there is an old effect then deactivate that now.
+
+						if (wheel.HasRearPlacement() == true)
+						{
+							activeSurface.Surface->SetFloatParameter(GritAmountName, 0.0f);
+						}
+
+						components.SetupLastComponent(wheelFadeOutTime, false);
+					}
+
+					if (GRIP_POINTER_VALID(activeSurface.Surface) == true)
+					{
+						// Update the current surface.
+
+						activeSurface.Timer = FMath::Max(activeSurface.Timer - deltaSeconds, 0.0f);
+
+						float alphaScale = 1.0f - (activeSurface.Timer / activeSurface.FadeTime);
+						float speedScale = (set == 0) ? 1.0f : FMath::Clamp((GetSpeedKPH() - 50.0f) / 100.0f, 0.0f, 1.0f);
+						float wheelScale = FMath::Min(FMath::Abs(wheel.RPS) / 10.0f, 1.0f);
+
+						if (wheel.HasRearPlacement() == true)
+						{
+							activeSurface.Surface->SetVectorParameter(GritVelocityName, GetGritVelocity());
+							activeSurface.Surface->SetVectorParameter(GritColorName, GetGritColor());
+							activeSurface.Surface->SetVectorParameter(SoftDustSizeName, GetDustSize());
+							activeSurface.Surface->SetFloatParameter(GritAmountName, GetGritAmount() * ((set == 0) ? 1.0f : 0.5f));
+						}
+
+						activeSurface.Surface->SetFloatParameter(DustAlphaName, GetDustAlpha(wheel, true, activeSurface.Spinning, activeSurface.Launched == false, activeSurface.Mandatory == false) * speedScale);
+						activeSurface.Surface->SetVectorParameter(DustColorName, GetDustColor((set == 0)));
+
+						if (surfaceType == EGameSurface::Dirt)
+						{
+							activeSurface.Surface->SetVectorParameter(DustInitialLocationName, FRotator(FMath::FRandRange(0, 360), FMath::FRandRange(0, 360), 0).RotateVector(FVector(150.0f, 0.0f, 0.0f)));
+						}
+						else
+						{
+							activeSurface.Surface->SetVectorParameter(DustInitialLocationName, FRotator(FMath::FRandRange(0, 360), FMath::FRandRange(0, 360), 0).RotateVector(FVector(150.0f, 0.0f, 0.0f)));
+						}
+
+						float alpha = activeSurface.CoatingAlpha;
+						float coatingScale = FMath::Min(speedScale, wheelScale);
+						float coatingAlpha = GetDustAlpha(wheel, (set == 0), activeSurface.Spinning, (set == 0) && activeSurface.Launched == false, activeSurface.Mandatory == false) * coatingScale * alphaScale;
+						float difference = coatingAlpha - alpha;
+						float changePerSecond = 1.0f / activeSurface.FadeTime;
+
+						{
+							if (FMath::Abs(difference) > changePerSecond * deltaSeconds)
+							{
+								coatingAlpha = alpha + (FMathEx::UnitSign(difference) * changePerSecond * deltaSeconds);
+							}
+						}
+
+						activeSurface.CoatingAlpha = coatingAlpha;
+						activeSurface.Surface->SetFloatParameter(CoatingAlphaName, coatingAlpha);
+					}
+
+					if (GRIP_POINTER_VALID(previousSurface.Surface) == true)
+					{
+						// Update the transitioning out surface.
+
+						previousSurface.Timer = FMath::Max(previousSurface.Timer - deltaSeconds, 0.0f);
+
+						float alphaScale = previousSurface.Timer / previousSurface.FadeTime;
+						float speedScale = (previousSurface.Launched == false) ? FMath::Clamp((GetSpeedKPH() - 50.0f) / 100.0f, 0.0f, 1.0f) : 1.0f;
+
+						previousSurface.Surface->SetFloatParameter(DustAlphaName, GetDustAlpha(wheel, true, previousSurface.Spinning, previousSurface.Launched == false, previousSurface.Mandatory == false) * speedScale * alphaScale);
+						previousSurface.Surface->SetFloatParameter(CoatingAlphaName, previousSurface.CoatingAlpha * alphaScale);
+
+						if (previousSurface.Timer == 0.0f ||
+							damageSmokeAlpha == 1.0f)
+						{
+							components.DestroyLastComponent();
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+/**
+* Get the size for a dust trail.
+***********************************************************************************/
+
+FVector ABaseVehicle::GetDustSize()
+{
+	float intensity = Noise(Physics.DistanceTraveled / 7.5f);
+
+	intensity = 150.0f + (intensity * 250.0f);
+	intensity = intensity + ((PerlinNoise.GetRandom() * 50.0f) - 25.0f);
+	intensity *= 0.75f;
+
+	return FVector(intensity, intensity, intensity);
+}
+
+/**
+* Get the color for grit.
+***********************************************************************************/
+
+FVector ABaseVehicle::GetGritColor()
+{
+	return GetDustColor(true) * 0.125f;
+}
+
+/**
+* Get the color for a dust trail.
+***********************************************************************************/
+
+FVector ABaseVehicle::GetDustColor(bool noise)
+{
+	float intensity = (noise == true) ? Noise(Physics.DistanceTraveled / 5.0f) : 1.0f;
+
+	intensity = 0.4f + (intensity * 0.6f);
+
+	if (noise == true)
+	{
+		intensity = intensity + ((PerlinNoise.GetRandom() * 0.4f) - 0.2f);
+	}
+
+	return FVector(intensity, intensity, intensity) * GameState->TransientGameState.MapSurfaceColor * GameState->TransientGameState.MapLightingColor;
+}
+
+/**
+* Get the alpha for a dust trail.
+***********************************************************************************/
+
+float ABaseVehicle::GetDustAlpha(FVehicleWheel& wheel, bool noise, bool spinning, bool integrateContact, bool integrateTimer)
+{
+	float contactScale = (integrateContact == true) ? wheel.IsInNearContact(wheel.Radius) : 1.0f;
+
+	if (integrateContact == true &&
+		wheel.IsInContact == false)
+	{
+		// Fade off after one second of no contact.
+
+		contactScale *= 1.0f - FMath::Min(wheel.ModeTime, 1.0f);
+	}
+
+	if (contactScale < KINDA_SMALL_NUMBER)
+	{
+		// If the wheel is too far away from the ground then no dust.
+
+		return 0.0f;
+	}
+	else
+	{
+		float globalAlpha = ((noise == true) ? FMath::FRandRange(0.666f, 1.0f) : 1.0f) * contactScale;
+
+		if (integrateTimer == true)
+		{
+			int32 phase = FMath::FloorToInt(Wheels.SurfaceEffectsTimer) % DrivingSurfaceMaxTime;
+
+			switch (phase)
+			{
+			case 0:
+				// Fade in.
+				globalAlpha *= FMath::Fmod(Wheels.SurfaceEffectsTimer, 1.0f);
+				break;
+			case 1:
+			case 2:
+				// 1 and 2 do nothing to mitigate the alpha as it's in full effect then.
+				break;
+			case 3:
+				// Fade out.
+				globalAlpha *= 1.0f - FMath::Fmod(Wheels.SurfaceEffectsTimer, 1.0f);
+				break;
+			case 4:
+			case 5:
+				// 4 and 5 are fully faded out.
+				globalAlpha = 0.0f;
+				break;
+			}
+		}
+
+		float intensity = 1.0f;
+
+		if (globalAlpha > KINDA_SMALL_NUMBER)
+		{
+			if (noise == true)
+			{
+				intensity = Noise(Physics.DistanceTraveled / 2.5f) * 0.875f + 0.125f;
+
+				intensity = intensity * intensity;
+				intensity *= 0.75f;
+				intensity *= FMath::Min(1.0f, (GetSpeedKPH() / 20.0f));
+			}
+		}
+
+		if (spinning == true)
+		{
+			return 0.75f * globalAlpha;
+		}
+		else
+		{
+			return intensity * globalAlpha;
+		}
+	}
+}
+
+/**
+* Get the amount of grit in a dust trail.
+***********************************************************************************/
+
+float ABaseVehicle::GetGritAmount() const
+{
+	float nominal = 0.0f;
+	float additional = GetDriftRatio();
+
+	if (SpinningTheWheel() == true)
+	{
+		nominal = FMath::Abs(Wheels.WheelRPS) / (VehicleEngineModel->StartingWheelSpinRPM / 60.0f);
+	}
+
+	if (FMath::Abs(Wheels.WheelRPS) < 50.0f / 60.0f)
+	{
+		return 0.0f;
+	}
+
+	return (nominal * 75.0f) + (75.0f * additional * nominal);
+}
+
+/**
+* Get the velocity for the grit in a dust trail.
+***********************************************************************************/
+
+FVector ABaseVehicle::GetGritVelocity()
+{
+	float x = FMathEx::UnitSign(Wheels.WheelRPS) * ((IsFlipped() == true) ? -1.0f : 1.0f);
+
+	return GetTransform().TransformVectorNoScale(FVector(((PerlinNoise.GetRandom() * 300.0f) + 500.0f) * x, PerlinNoise.GetRandom() ^ 100.0f, ((PerlinNoise.GetRandom() * 500.0f) + 150.0f) * ((IsFlipped() == true) ? -1.0f : 1.0f)));
+}
+
+/**
+* Compute a timer to co-ordinate the concurrent use of effects across vehicles.
+***********************************************************************************/
+
+void ABaseVehicle::ComputeSurfaceEffectsTimer()
+{
+	if (PlayGameMode != nullptr)
+	{
+		int32 numVehicles = PlayGameMode->GetVehicles().Num();
+
+		Wheels.SurfaceEffectsTimer = ((float)VehicleIndex / (float)numVehicles) * DrivingSurfaceMaxTime;
+	}
+}
+
+/**
+* Get a noise value.
+***********************************************************************************/
+
+float ABaseVehicle::Noise(float value) const
+{
+	float height = PerlinNoise.Noise1(value * 0.03125f);
+
+	height += PerlinNoise.Noise1(value * 0.0625f) * 0.5f;
+	height += PerlinNoise.Noise1(value * 0.125f) * 0.25f;
+	height += PerlinNoise.Noise1(value * 0.25f) * 0.125f;
+
+	return height + 0.625f;
+}
+
+#pragma endregion VehicleSurfaceEffects
+
 #pragma region VehicleAnimation
 
 /**
@@ -2681,6 +3172,14 @@ void ABaseVehicle::CompletePostSpawn()
 		UE_LOG(GripLog, Log, TEXT("ABaseVehicle::CompletePostSpawn"));
 
 		PostSpawnComplete = true;
+
+#pragma region VehicleSurfaceEffects
+
+		// Compute a timer to co-ordinate the concurrent use of effects across vehicles.
+
+		ComputeSurfaceEffectsTimer();
+
+#pragma endregion VehicleSurfaceEffects
 
 		if (PlayGameMode != nullptr)
 		{
