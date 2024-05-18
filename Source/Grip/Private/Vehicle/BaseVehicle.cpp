@@ -292,6 +292,19 @@ void ABaseVehicle::PostInitializeComponents()
 			FVector standardOffset = FVector(boneOffset.X, boneOffset.Y, 0.0f);
 			FVector suspensionForcesOffset = standardOffset;
 
+#pragma region VehiclePhysicsTweaks
+
+			// Ensure the contact sensor itself sits half a wheel width in from the original physics asset bounds
+			// which is often a little further from the vehicle body than the bone to which the wheel is located.
+			// This can have a beneficial effect of stabilizing the vehicle more effectively with suspension.
+
+			if (Physics.BodyBounds.Max.Y != 0.0f)
+			{
+				suspensionForcesOffset.Y = (FMath::Abs(Physics.BodyBounds.Max.Y) - assignment.Width * 0.5f) * FMathEx::UnitSign(suspensionForcesOffset.Y);
+			}
+
+#pragma endregion VehiclePhysicsTweaks
+
 #pragma region VehicleGrip
 
 			if (TireFrictionModel != nullptr &&
@@ -1481,6 +1494,27 @@ void ABaseVehicle::UpdatePowerAndGearing(float deltaSeconds, const FVector& xdir
 		{
 			gearPowerRatio = VehicleEngineModel->GearPowerRatios[gear];
 #if GRIP_STATIC_ACCELERATION
+
+#pragma region VehiclePhysicsTweaks
+
+			// With low-powered vehicles, the low-speed acceleration felt too weak for many players,
+			// even though the top speed was fast enough. So here, we're giving the low-powered vehicles
+			// the same low-speed acceleration characteristics as a high-powered vehicle.
+
+			if (gearPowerRatio < 1.0f &&
+				GameState->GeneralOptions.EnginePowerLevel < 2)
+			{
+				float p0 = GameState->GeneralOptions.GetEnginePowerScale(GameState->GetDifficultyLevel());
+				float p1 = GameState->GeneralOptions.GetEnginePowerScale(GameState->GetDifficultyLevel(), 2);
+
+				if (p0 < p1)
+				{
+					gearPowerRatio *= p1 / p0;
+				}
+			}
+
+#pragma endregion VehiclePhysicsTweaks
+
 #endif // GRIP_STATIC_ACCELERATION
 		}
 

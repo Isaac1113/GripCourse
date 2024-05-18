@@ -734,6 +734,27 @@ public:
 	// The time in seconds that the outro should last at the end of a game.
 	static const int32 RaceOutroTime = 5;
 
+#pragma region VehiclePhysicsTweaks
+
+#if GRIP_ANTI_SKYWARD_LAUNCH
+
+public:
+
+	// Should an actor actively limit the collision response when a vehicle collides with it?
+	bool ShouldActorLimitCollisionResponse(AActor* actor);
+
+private:
+
+	// Result of the last frictional actor check, cached for optimization.
+	bool LastFrictionalActorCheckResult = false;
+
+	// The last frictional actor that was checked.
+	TWeakObjectPtr<AActor> LastFrictionalActorCheck;
+
+#endif // GRIP_ANTI_SKYWARD_LAUNCH
+
+#pragma endregion VehiclePhysicsTweaks
+
 protected:
 
 	// Do some post initialization just before the game is ready to play.

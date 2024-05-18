@@ -906,3 +906,29 @@ float APlayGameMode::GetHUDScale() const
 {
 	return 0.0f;
 }
+
+#pragma region VehiclePhysicsTweaks
+
+#if GRIP_ANTI_SKYWARD_LAUNCH
+
+/**
+* Should an actor actively limit the collision response when a vehicle collides
+* with it?
+***********************************************************************************/
+
+bool APlayGameMode::ShouldActorLimitCollisionResponse(AActor* actor)
+{
+	if (actor == LastFrictionalActorCheck.Get())
+	{
+		return LastFrictionalActorCheckResult;
+	}
+
+	LastFrictionalActorCheck = actor;
+	LastFrictionalActorCheckResult = FrictionalActors.Contains(actor);
+
+	return LastFrictionalActorCheckResult;
+}
+
+#endif // GRIP_ANTI_SKYWARD_LAUNCH
+
+#pragma endregion VehiclePhysicsTweaks

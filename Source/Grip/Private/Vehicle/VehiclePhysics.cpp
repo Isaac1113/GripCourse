@@ -116,6 +116,46 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 	Physics.PhysicsTransform = transform;
 	Physics.Direction = xdirection;
 
+#pragma region VehiclePhysicsTweaks
+
+#if GRIP_MANAGE_MAX_ANGULAR_VELOCITY
+
+	// Set the maximum angular velocity of the vehicle based on its current speed to help with
+	// collision responses. We found this helped to smooth things out a bit, but is probably not
+	// particularly necessary these days.
+
+	float fromMAV = 250.0f;
+	float toMAV = 200.0f;
+	float alpha = FMath::Sin(FMathEx::GetRatio(GetSpeedKPH(), 0.0f, 250.0f) * PI * 0.5f);
+
+	if (IsAirborne() == true)
+	{
+		Physics.MAVTimer -= deltaSeconds;
+	}
+	else
+	{
+		Physics.MAVTimer += deltaSeconds;
+	}
+
+	Physics.MAVTimer = FMath::Clamp(Physics.MAVTimer, 0.0f, 1.0f);
+
+	alpha *= Physics.MAVTimer;
+
+	// Low speed or airborne gets the most amount of max angular velocity. High speed and grounded
+	// gets the least amount of max angular velocity.
+
+	Physics.MAV = FMath::Lerp(fromMAV, toMAV, alpha);
+
+	if (PhysicsBody != nullptr &&
+		FMath::Abs(PhysicsBody->MaxAngularVelocity - Physics.MAV) > 1.0f)
+	{
+		PhysicsBody->SetMaxAngularVelocityInRadians(FMath::DegreesToRadians(Physics.MAV), false, true);
+	}
+
+#endif // GRIP_MANAGE_MAX_ANGULAR_VELOCITY
+
+#pragma endregion VehiclePhysicsTweaks
+
 	// Get the world and local velocity in meters per second of the vehicle.
 
 	FVector lastVelocity = Physics.VelocityData.Velocity;
@@ -151,6 +191,68 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 	Wheels.RearAxlePosition = transform.TransformPosition(FVector(Wheels.RearAxleOffset, 0.0f, 0.0f));
 
 #pragma endregion VehicleContactSensors
+
+#pragma region VehiclePhysicsTweaks
+
+#if GRIP_VARIABLE_MASS_AND_INERTIA_TENSOR
+
+	if (Physics.InertiaTensorScaleTimer > 0.0f)
+	{
+		if (Physics.ContactData.Grounded == true &&
+			Physics.ContactData.ModeTime > 0.2f &&
+			Physics.InertiaTensorScaleTimer > 1.0f)
+		{
+			Physics.InertiaTensorScaleTimer = 1.0f;
+		}
+
+		Physics.InertiaTensorScaleTimer = FMath::Max(Physics.InertiaTensorScaleTimer - deltaSeconds, 0.0f);
+
+		Physics.CurrentMass = FMath::Lerp(7000.0f, Physics.StockMass, (Physics.InertiaTensorScaleTimer < 1.0f) ? 1.0f - Physics.InertiaTensorScaleTimer : 0.0f);
+	}
+	else
+	{
+		Physics.CurrentMass = Physics.StockMass;
+	}
+
+	// Drop the mass of the vehicle if we're in a hard, centrifugal corner.
+
+	float currentMass = Physics.StockMass;
+	float pitchRate = FMath::Abs(GetAngularVelocity().Y);
+
+	if (pitchRate > 20.0f &&
+		IsGrounded() == true)
+	{
+		float compression = 0.0f;
+
+		for (FVehicleWheel& wheel : Wheels.Wheels)
+		{
+			compression += FMath::Min(2.0f, wheel.GetActiveSensor().GetNormalizedCompression());
+		}
+
+		compression /= Wheels.Wheels.Num();
+		compression /= 2.0f;
+
+		float ratio = FMath::Min((pitchRate - 20.0f) / 10.0f, 1.0f) * compression;
+
+		currentMass = FMath::Lerp(Physics.StockMass, 5000.0f, ratio);
+	}
+
+	currentMass = FMath::Lerp(currentMass, Physics.CompressedMass, FMathEx::GetSmoothingRatio(0.9f, deltaSeconds));
+
+	Physics.CompressedMass = FMathEx::GravitateToTarget(Physics.CompressedMass, currentMass, Physics.StockMass * deltaSeconds);
+	Physics.CurrentMass = FMath::Min(Physics.CurrentMass, Physics.CompressedMass);
+
+#if GRIP_ENGINE_PHYSICS_MODIFIED
+	if (PhysicsBody != nullptr &&
+		PhysicsBody->bOverrideInertiaTensor == true)
+	{
+		VehicleMesh->SetPhysicsMassAndInertiaTensorSubstep(Physics.CurrentMass, PhysicsBody->InertiaTensor);
+	}
+#endif // GRIP_ENGINE_PHYSICS_MODIFIED
+
+#endif // GRIP_VARIABLE_MASS_AND_INERTIA_TENSOR
+
+#pragma endregion VehiclePhysicsTweaks
 
 #pragma region VehicleBasicForces
 
@@ -290,6 +392,39 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 
 #pragma endregion VehicleBidirectionalTraction
 
+#pragma region VehiclePhysicsTweaks
+
+#if GRIP_NORMALIZED_WEIGHT_ON_WHEEL
+
+	float averageWeight = 0.0f;
+	float maximumWeightFront = 0.0f;
+	float maximumWeightRear = 0.0f;
+
+	if (GetNumWheels() > 0)
+	{
+		for (FVehicleWheel& wheel : Wheels.Wheels)
+		{
+			float weight = GetWeightActingOnWheel(wheel);
+
+			averageWeight += GetWeightActingOnWheel(wheel);
+
+			if (wheel.HasFrontPlacement() == true)
+			{
+				maximumWeightFront = FMath::Max(maximumWeightFront, weight);
+			}
+			else if (wheel.HasRearPlacement() == true)
+			{
+				maximumWeightRear = FMath::Max(maximumWeightRear, weight);
+			}
+		}
+
+		averageWeight /= GetNumWheels();
+	}
+
+#endif // GRIP_NORMALIZED_WEIGHT_ON_WHEEL
+
+#pragma endregion VehiclePhysicsTweaks
+
 #pragma region VehicleGrip
 
 	// Now, let's deal with all of the wheel forces.
@@ -319,7 +454,37 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 		{
 			// Apply friction / traction if the wheel is in contact with a surface.
 
+#pragma region VehiclePhysicsTweaks
+
+#if GRIP_NORMALIZED_WEIGHT_ON_WHEEL
+			float weightOnWheel = averageWeight;
+
+			if (Antigravity == false)
+			{
+				// Dirty hack to stop people whining about loss of control. This ensures
+				// that we have symmetrical grip for each wheel on a particular axle at
+				// least, if not the vehicle as a whole.
+
+				if (wheel.HasFrontPlacement() == true)
+				{
+					if (maximumWeightFront < KINDA_SMALL_NUMBER)
+					{
+						weightOnWheel = 0.0f;
+					}
+				}
+				else if (wheel.HasRearPlacement() == true)
+				{
+					if (maximumWeightRear < KINDA_SMALL_NUMBER)
+					{
+						weightOnWheel = 0.0f;
+					}
+				}
+			}
+#else // GRIP_NORMALIZED_WEIGHT_ON_WHEEL
 			float weightOnWheel = GetWeightActingOnWheel(wheel);
+#endif // GRIP_NORMALIZED_WEIGHT_ON_WHEEL
+
+#pragma endregion VehiclePhysicsTweaks
 
 			// Handle the longitudinal braking.
 
@@ -328,6 +493,29 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 			float longitudinalGripCoefficient = TireFrictionModel->LongitudinalGripCoefficient;
 
 			Physics.CentralizeGrip = false;
+
+#pragma region VehiclePhysicsTweaks
+
+#if GRIP_NORMALIZE_GRIP_ON_LANDING
+
+			if (Antigravity == false)
+			{
+				// No need to centralize grip on antigravity vehicles as all springs will share the same
+				// value with regard to grip ratio.
+
+				if (wheel.HasFrontPlacement() == true &&
+					frontCompression > rearCompression + 0.333f &&
+					(IsAirborne() == true || Physics.ContactData.ModeTime < 1.0f))
+				{
+					// Centralize the grip if this is a front wheel and we're not getting as much rear wheel contact.
+
+					Physics.CentralizeGrip = true;
+				}
+			}
+
+#endif // GRIP_NORMALIZE_GRIP_ON_LANDING
+
+#pragma endregion VehiclePhysicsTweaks
 
 			if (wheel.HasCenterPlacement() == false)
 			{
@@ -524,6 +712,19 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 
 				if (wheel.HasCenterPlacement() == false)
 				{
+
+#pragma region VehiclePhysicsTweaks
+
+					if (Physics.CentralizeGrip == true)
+					{
+						// By doing this, the remove forces that will spin the vehicle.
+
+						VehicleMesh->AddForceSubstep(lateralForceVector);
+					}
+					else
+
+#pragma endregion VehiclePhysicsTweaks
+
 					{
 						wheelForce += lateralForceVector;
 					}
@@ -750,6 +951,180 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 
 	Physics.VelocityData.LastVelocityDirection = Physics.VelocityData.VelocityDirection;
 
+#pragma region VehiclePhysicsTweaks
+
+#if GRIP_ANTI_SKYWARD_LAUNCH
+
+	// So the aim is to stop vehicles bouncing off terrain and heading skyward then taking
+	// an age to get down on the ground. How do we do that?
+
+	// First, record the velocity vector over time, more specifically the Z value.
+
+	// Second, monitor rate of angular change in that vector over the last, say, a third of a second.
+
+	// Third, if that rate of change, in the upward direction, is too high, then mitigate
+	// the velocity by applying a reverse force to slow the vehicle down. While we're in contact
+	// with the ground this will help slow the launch before it has begun if we're in contact
+	// for long enough.
+
+	// Lastly, apply mitigation for a short moment following a high rate of change to allow it
+	// time to work.
+
+	if (EnableBounceImpactMitigation == true ||
+		EnableVerticalImpactMitigation == true)
+	{
+		float time = 0.333f;
+		float since = physicsClock - time;
+		float speed = GetSpeedKPH();
+		float mitigationTime = 1.0f;
+
+		// Pitch will be positive for upward direction and negative for downward direction.
+
+		if (speed > 50.0f)
+		{
+			int32 numValues = Physics.VelocityPitchList.GetNumValues();
+
+			if (numValues > 2)
+			{
+				float bounceRatio = 0.0f;
+				float maxPitchAngle = 0.0f;
+				float maxPitchDifference = 0.0f;
+
+				for (int32 i = numValues - 1; i > 0; i--)
+				{
+					auto& i0 = Physics.VelocityPitchList[i];
+
+					if (i0.Time >= since)
+					{
+						auto& i1 = Physics.VelocityPitchList[i - 1];
+						float t0 = i0.Time;
+						float t1 = i1.Time;
+						float t2 = t0 - 2.0f;
+						float p0 = i0.Value;
+						float p1 = i1.Value;
+
+						float difference = 0.0f;
+
+						if (!FMath::IsNearlyEqual(t0, t1))
+						{
+							difference = FMathEx::GetUnsignedDegreesDifference(p0, p1, false) / (t0 - t1);
+						}
+
+						// difference is now the change in pitch in degrees per second.
+
+						float scale = 1.0f - ((physicsClock - i0.Time) / time);
+
+						// Tail off the difference with regard to time.
+
+						difference *= scale;
+
+						if (maxPitchDifference < difference)
+						{
+							bounceRatio = 0.0f;
+							maxPitchAngle = (p0 + p1) * 0.5f;
+							maxPitchDifference = difference;
+
+							int32 numAirborneSamples = 0;
+							int32 numAirborneValues = Physics.ContactData.AirborneList.GetNumValues();
+
+							for (int32 j = numAirborneValues - 1; j >= 0; j--)
+							{
+								auto& j0 = Physics.ContactData.AirborneList[j];
+								float jtime = j0.Time;
+
+								if (jtime < t2)
+								{
+									break;
+								}
+
+								if (jtime < t0)
+								{
+									numAirborneSamples++;
+									bounceRatio += j0.Value;
+								}
+							}
+
+							if (numAirborneSamples > 0)
+							{
+								bounceRatio /= numAirborneSamples;
+							}
+						}
+					}
+					else
+					{
+						break;
+					}
+				}
+
+				float scale = 0.0f;
+				bool bouncing = (bounceRatio > 0.5f);
+
+				if (bouncing == true &&
+					EnableBounceImpactMitigation == true)
+				{
+					scale = BounceImpactMitigation.GetRichCurve()->Eval(maxPitchDifference);
+
+					// Inhibit bounce less the more vertical the pitch is.
+
+					scale *= 1.0f - FMath::Min(FMath::Max(FMath::Abs(maxPitchAngle) - 45.0f, 0.0f) / 45.0f, 1.0f);
+				}
+				else if (EnableVerticalImpactMitigation == true)
+				{
+					scale = VerticalImpactMitigation.GetRichCurve()->Eval(maxPitchDifference);
+				}
+
+				float amount = GetSpeedMPS() * scale;
+				float currently = (Physics.VelocityPitchMitigationTime * Physics.VelocityPitchMitigationAmount) + (amount * 0.15f);
+
+				if (amount > currently)
+				{
+					for (FVehicleWheel& wheel : Wheels.Wheels)
+					{
+						if (wheel.GetActiveSensor().HasNearestContactPoint(wheel.Velocity, 0.0f) == true)
+						{
+							if (PlayGameMode != nullptr &&
+								PlayGameMode->ShouldActorLimitCollisionResponse(wheel.GetActiveSensor().GetHitResult().Actor.Get()) == true)
+							{
+								Physics.VelocityPitchMitigationTime = mitigationTime;
+								Physics.VelocityPitchMitigationAmount = amount;
+								Physics.VelocityPitchMitigationRatio = (bouncing == true) ? BounceImpactMitigationRatio : VerticalImpactMitigationRatio;
+
+								break;
+							}
+						}
+					}
+				}
+			}
+		}
+
+		{
+			float scale = Physics.VelocityPitchMitigationTime * Physics.VelocityPitchMitigationAmount;
+
+			scale *= FMathEx::GetRatio(speed - 50.0f, 0.0f, 200.0f);
+
+			Physics.VelocityPitchMitigationForce = scale;
+
+			if (scale > KINDA_SMALL_NUMBER)
+			{
+				scale *= -1.0f;
+
+				// Scale the braking response to be less in the world horizontal plane than the vertical plane.
+
+				FVector response(Physics.VelocityPitchMitigationRatio * scale, Physics.VelocityPitchMitigationRatio * scale, scale);
+
+				VehicleMesh->IdleUnlock();
+
+				VehicleMesh->AddForceSubstep(FMathEx::MetersToCentimeters(Physics.VelocityData.VelocityDirection * response) * forceScale * Physics.CurrentMass * 0.01f);
+			}
+		}
+
+		Physics.VelocityPitchMitigationTime = FMath::Max(Physics.VelocityPitchMitigationTime - (deltaSeconds / time), 0.0f);
+	}
+
+#endif // GRIP_ANTI_SKYWARD_LAUNCH
+
+#pragma endregion VehiclePhysicsTweaks
+
 	Physics.Timing.LastSubstepDeltaSeconds = deltaSeconds;
 
 #pragma endregion VehicleBasicForces
@@ -905,6 +1280,83 @@ int32 ABaseVehicle::UpdateContactSensors(float deltaSeconds, const FTransform& t
 
 		Wheels.HardCompressionTime = FMath::Max(Wheels.HardCompressionTime - deltaSeconds, 0.0f);
 
+#pragma region VehiclePhysicsTweaks
+
+#if GRIP_VEHICLE_SUSPENSION_BOUNCE_MITIGATION
+
+		if (PhysicsBody != nullptr)
+		{
+			// Deal with suspension force application to stop it inadvertently doing bad things to
+			// the vehicle.
+
+			float rearScale = 1.0f;
+			float frontScale = 1.0f;
+
+			// First check if just the front or rear axle is in contact with the ground. If so,
+			// determine the pitch velocity and reduce the suspension force if the velocity is
+			// already high enough too avoid applying suspension (which would just exaggerate it and
+			// make the vehicle bounce badly).
+
+			if (rearCompression >= 1.25f &&
+				frontCompression < 1.25f)
+			{
+				// Rear axle is coming down hard while the front axle isn't.
+
+				if (Physics.ContactData.AirborneList.GetMeanValue(physicsClock - 1.0f) > 0.75f)
+				{
+					float scale = 1.0f - (FMath::Min(rearCompression - frontCompression, 0.25f) * 4.0f);
+
+					rearScale = FMath::Min(rearScale, scale);
+				}
+			}
+
+			if (rearCompression <= 1.25f &&
+				frontCompression >= 1.25f)
+			{
+				// Front axle is coming down hard while the rear axle isn't.
+
+				if (Physics.ContactData.AirborneList.GetMeanValue(physicsClock - 1.0f) > 0.75f)
+				{
+					// We're mostly airborne for the last second.
+
+					float pitchRate = Physics.VelocityData.AngularVelocity.Y * (IsFlipped() ? 1.0f : -1.0f);
+
+					if (pitchRate > 0.0f)
+					{
+						// Back-end is flying up compared to the ground.
+
+						float scale = 1.0f - (FMath::Min(frontCompression - rearCompression, 0.25f) * 4.0f);
+
+						frontScale = FMath::Min(frontScale, scale);
+					}
+				}
+			}
+
+			if (Antigravity == false)
+			{
+				// Scale the suspension forces.
+
+				for (FVehicleWheel& wheel : Wheels.Wheels)
+				{
+					for (FVehicleContactSensor& sensor : wheel.Sensors)
+					{
+						if (wheel.HasRearPlacement() == true)
+						{
+							sensor.ForceToApply *= rearScale;
+						}
+						else if (wheel.HasFrontPlacement() == true)
+						{
+							sensor.ForceToApply *= frontScale;
+						}
+					}
+				}
+			}
+		}
+
+#endif // GRIP_VEHICLE_SUSPENSION_BOUNCE_MITIGATION
+
+#pragma endregion VehiclePhysicsTweaks
+
 		int32 numUpNear = 0;
 		int32 numDownNear = 0;
 		float contactSeconds = 1.5f;
@@ -981,6 +1433,69 @@ int32 ABaseVehicle::UpdateContactSensors(float deltaSeconds, const FTransform& t
 		{
 			Physics.ContactData.FallingTime = 0.0f;
 		}
+
+#pragma region VehiclePhysicsTweaks
+
+		// Loop around for each sensor set, determining the maximum force and force vector
+		// for all of the wheel in that sensor set.
+
+		check(Wheels.Wheels.Num() == 0 || GRIP_NUM_ELEMENTS(Wheels.Wheels[0].Sensors) == 2);
+
+		float maxForce[2] = { 0.0f, 0.0f };
+		FVector maxForceVector[2] = { FVector::ZeroVector, FVector::ZeroVector };
+
+		for (FVehicleWheel& wheel : Wheels.Wheels)
+		{
+			int32 setIndex = 0;
+
+			for (FVehicleContactSensor& sensor : wheel.Sensors)
+			{
+				float force = sensor.ForceToApply.Size();
+
+				if (maxForce[setIndex] < force)
+				{
+					maxForce[setIndex] = force;
+					maxForceVector[setIndex] = sensor.ForceToApply;
+				}
+
+				setIndex++;
+			}
+		}
+
+#if GRIP_VEHICLE_SUSPENSION_BOUNCE_NORMALIZE
+		if (Antigravity == false &&
+			Physics.SpringScaleTimer != 0.0f &&
+			Physics.ContactData.Grounded == true)
+		{
+			// If the vehicle has all its wheels on the ground, then set the maximum force
+			// we observed for each sensor set, to all of the wheels in that set. We only do this
+			// when the vehicle was recently airborne, so effectively has just landed.
+			// SpringScaleTimer is 1.0 when airborne, and decrements down to 0.0 over time
+			// when not, so we get an interpolation between maximum forces and normal forces.
+
+			// This sounds very dumb, but in fact, it's there to balance the suspension forces
+			// if we've just made a landing so that we don't get any corners just popping up
+			// and rotating the vehicle around. It's not at all realistic, but it works. It
+			// feels dirty, but it made for a better game in GRIP.
+
+			for (FVehicleWheel& wheel : Wheels.Wheels)
+			{
+				int32 setIndex = 0;
+
+				for (FVehicleContactSensor& sensor : wheel.Sensors)
+				{
+					float forceApplied = FMath::Lerp(sensor.ForceToApply.Size(), maxForce[setIndex], Physics.SpringScaleTimer);
+
+					sensor.ForceToApply.Normalize();
+					sensor.ForceToApply *= forceApplied;
+
+					setIndex++;
+				}
+			}
+		}
+#endif // GRIP_VEHICLE_SUSPENSION_BOUNCE_NORMALIZE
+
+#pragma endregion VehiclePhysicsTweaks
 
 		// Determine which is the currently grounded sensor set, if any.
 
@@ -1220,7 +1735,145 @@ int32 ABaseVehicle::UpdateContactSensors(float deltaSeconds, const FTransform& t
 		}
 
 		Wheels.SurfacesVincinal &= IsPracticallyGrounded(250.0f, true);
+
+#pragma region VehiclePhysicsTweaks
+
+#if GRIP_VARIABLE_MASS_AND_INERTIA_TENSOR
+
+		if (numUpNear + numDownNear + numUpContact + numDownContact == 0)
+		{
+			Physics.SpringScaleTimer = 1.0f;
+			Physics.InertiaTensorScaleTimer = 2.0f;
+		}
+
+		if (Physics.InertiaTensorScaleTimer > 1.0f &&
+			numUpContact + numDownContact == 0)
+		{
+			Physics.SpringScaleTimer = 1.0f;
+			Physics.InertiaTensorScaleTimer = 2.0f;
+		}
+
+#endif // GRIP_VARIABLE_MASS_AND_INERTIA_TENSOR
+
+#pragma endregion VehiclePhysicsTweaks
+
 	}
+
+#pragma region VehiclePhysicsTweaks
+
+#if GRIP_VEHICLE_BOUNCE_CONTROL
+
+	if (bounceCompression == true &&
+		Physics.Bounce.Stage == 0 &&
+		Physics.ContactData.ModeTime < 0.5f)
+	{
+		// Look for good bounce setup for up to a quarter of a second after landing.
+
+		Physics.Bounce.Stage = 1;
+		Physics.Bounce.Timer = 0.25f;
+		Physics.Bounce.Direction = GetSurfaceNormal();
+	}
+
+	if (Physics.Bounce.Stage == 1)
+	{
+		FVector localVelocity = Physics.Bounce.Direction.ToOrientationQuat().UnrotateVector(Physics.VelocityData.VelocityDirection);
+
+		if (localVelocity.X >= 0.0f)
+		{
+			// Determine how hard we came down.
+
+			float maxSpeed = 0.0f;
+			int32 numValues = Physics.VelocityList.GetNumValues();
+
+			for (int32 i = numValues - 1; i >= 0; i--)
+			{
+				if (Physics.VelocityList[i].Time < Physics.Timing.TickSum - 0.25f)
+				{
+					break;
+				}
+
+				localVelocity = Physics.Bounce.Direction.ToOrientationQuat().UnrotateVector(Physics.VelocityList[i].Value);
+
+				if (localVelocity.X < 0.0f)
+				{
+					maxSpeed = FMath::Max(maxSpeed, -localVelocity.X);
+				}
+			}
+
+			FVector surfaceNormal = GetSurfaceNormal();
+			float scale = FMathEx::GetRatio(maxSpeed, 1500.0f, 5000.0f);
+
+			if (scale > KINDA_SMALL_NUMBER)
+			{
+				{
+					scale = scale * 0.25f + 0.4f;
+				}
+
+				scale = FMath::Lerp(0.0f, scale, FMathEx::GetRatio(surfaceNormal.Z, -1.0f, 1.0f));
+
+				scale = FMath::Min(scale, AntigravityBounceScale);
+
+				if (scale > KINDA_SMALL_NUMBER)
+				{
+					Physics.Bounce.Timer = 1.0f;
+					Physics.Bounce.Force = scale;
+					Physics.Bounce.Direction = surfaceNormal;
+					Physics.Bounce.Stage = 2;
+				}
+			}
+			else
+			{
+				Physics.Bounce.Stage = 3;
+			}
+		}
+		else
+		{
+			Physics.Bounce.Timer -= deltaSeconds;
+
+			if (Physics.Bounce.Timer <= 0.0f)
+			{
+				Physics.Bounce.Stage = 3;
+			}
+		}
+	}
+
+	if (Physics.Bounce.Stage == 2)
+	{
+		if (Physics.Bounce.Timer > 0.0f)
+		{
+			FVector angularVelocity = VehicleMesh->GetPhysicsAngularVelocityInDegrees();
+
+			angularVelocity.X *= 1.0f - Physics.Bounce.Timer;
+			angularVelocity.Y *= 1.0f - Physics.Bounce.Timer;
+
+			VehicleMesh->SetPhysicsAngularVelocityInDegreesSubstep(angularVelocity);
+
+			VehicleMesh->IdleUnlock();
+
+			VehicleMesh->AddForceSubstep(Physics.Bounce.Direction * Physics.Bounce.Force * Physics.Bounce.Timer * Physics.CurrentMass * 25000.0f);
+		}
+
+		{
+			Physics.Bounce.Timer -= deltaSeconds * 12.0f;
+		}
+
+		if (Physics.Bounce.Timer <= -2.0f)
+		{
+			Physics.Bounce.Stage = 0;
+		}
+	}
+
+	if (Physics.Bounce.Stage == 3)
+	{
+		if (IsAirborne() == true)
+		{
+			Physics.Bounce.Stage = 0;
+		}
+	}
+
+#endif // GRIP_VEHICLE_BOUNCE_CONTROL
+
+#pragma endregion VehiclePhysicsTweaks
 
 	return numUpContact + numDownContact;
 }

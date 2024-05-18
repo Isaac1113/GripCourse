@@ -60,6 +60,14 @@ void ADebugVehicleHUD::DrawHUD()
 
 #pragma endregion VehicleDrifting
 
+#pragma region VehiclePhysicsTweaks
+
+#if GRIP_ANTI_SKYWARD_LAUNCH
+		AddFloat(TEXT("VelocityPitchMitigationForce"), vehicle->Physics.VelocityPitchMitigationForce);
+#endif GRIP_ANTI_SKYWARD_LAUNCH
+
+#pragma endregion VehiclePhysicsTweaks
+
 		if (vehicle->Physics.Timing.TickCount > 0)
 		{
 			AddFloat(TEXT("General Clock"), vehicle->Physics.Timing.GeneralTickSum);
