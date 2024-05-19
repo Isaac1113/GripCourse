@@ -442,7 +442,15 @@ FLinearColor UHUDWidgetComponent::GetPickupChargeColour(int32 slotIndex) const
 
 float UHUDWidgetComponent::GetLaunchChargeLevel() const
 {
-	return 0.0f;
+
+#pragma region VehicleLaunch
+
+	ABaseVehicle* vehicle = GetTargetVehicle();
+
+	return (vehicle != nullptr) ? vehicle->GetLaunchChargeLevel() : 0.0f;
+
+#pragma endregion VehicleLaunch
+
 }
 
 /**
@@ -451,7 +459,15 @@ float UHUDWidgetComponent::GetLaunchChargeLevel() const
 
 FLinearColor UHUDWidgetComponent::GetLaunchChargeColour() const
 {
-	return FLinearColor(0.0f, 0.0f, 0.0f, 0.0f);
+
+#pragma region VehicleLaunch
+
+	ABaseVehicle* vehicle = GetTargetVehicle();
+
+	return (vehicle != nullptr) ? vehicle->GetLaunchChargeColour() : FLinearColor(1.0f, 0.0f, 0.0f, 1.0f);
+
+#pragma endregion VehicleLaunch
+
 }
 
 /**

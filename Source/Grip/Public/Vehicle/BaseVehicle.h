@@ -1380,17 +1380,89 @@ private:
 	// Start charging the vehicle launch.
 	UFUNCTION(BlueprintCallable, Category = Advanced)
 		void LaunchChargeOn(bool ai)
-	{ }
+	{
+		if (ai == AI.BotDriver)
+		{
+			LaunchPressed = true;
+
+			if (LaunchCharging == ELaunchStage::Idle)
+			{
+				LaunchCharging = ELaunchStage::Charging; LaunchTimer = 0.0f;
+			}
+		}
+	}
 
 	// Stop charging the vehicle launch and invoke it.
 	UFUNCTION(BlueprintCallable, Category = Advanced)
 		void LaunchChargeOff(bool ai, float overrideCharge = 0.0f)
-	{ }
+	{
+		if (ai == AI.BotDriver)
+		{
+			LaunchPressed = false;
+
+			if (LaunchCharging == ELaunchStage::Charging)
+			{
+				LaunchCharging = ELaunchStage::Released; if (overrideCharge != 0.0f) LaunchTimer = overrideCharge;
+			}
+		}
+	}
 
 	// Cancel charging the vehicle launch.
 	UFUNCTION(BlueprintCallable, Category = Advanced)
 		void LaunchChargeCancel(bool ai)
-	{ }
+	{
+		if (ai == AI.BotDriver)
+		{
+			LaunchPressed = false;
+
+			if (LaunchCharging == ELaunchStage::Charging)
+			{
+				LaunchCharging = ELaunchStage::Idle; LaunchTimer = 0.0f;
+			}
+		}
+	}
+
+public:
+
+	// Get the charge level for vehicle launching.
+	float GetLaunchChargeLevel() const
+	{ return (LaunchCharging == ELaunchStage::Charging) ? LaunchTimer : 0.0f; }
+
+	// Get the charge color for vehicle launching.
+	FLinearColor GetLaunchChargeColour() const
+	{ return (LaunchTimer == 1.0f) ? FLinearColor(0.0f, 1.0f, 0.0f, 1.0f) : FLinearColor(1.0f, 0.0f, 0.0f, 1.0f); }
+
+private:
+
+	// Update the launching of the vehicle.
+	void UpdateLaunch(float deltaSeconds);
+
+	// Start vehicle launch charging.
+	void LaunchChargeInputOn()
+	{ LaunchChargeOn(false); }
+
+	// Stop vehicle launch charging, initiating the launch.
+	void LaunchChargeInputOff()
+	{ LaunchChargeOff(false); }
+
+	// Cancel vehicle launch charging.
+	void LaunchChargeInputCancel()
+	{ LaunchChargeCancel(false); }
+
+	// Is the launch input currently pressed?
+	bool LaunchPressed = false;
+
+	// Timer used for vehicle launching.
+	float LaunchTimer = 0.0f;
+
+	// The last time the vehicle was launched.
+	float LastLaunchTime = 0.0f;
+
+	// The current state of the vehicle launching.
+	ELaunchStage LaunchCharging = ELaunchStage::Idle;
+
+	// The surface normal that the vehicle launched from.
+	FVector LaunchSurfaceNormal = FVector::ZeroVector;
 
 #pragma endregion VehicleLaunch
 
@@ -1480,6 +1552,45 @@ private:
 	void SpawnSurfaceImpactEffect(const FVector& hitLocation, const FVector& hitNormal, const FHitResult& hitResult, const FVector& velocity, float controllerForce, bool tireImpact);
 
 #pragma endregion VehicleSurfaceImpacts
+
+#pragma region VehicleAudio
+
+public:
+
+	// The global volume level of this vehicle for things like engine sound effects.
+	float GlobalVolume = 0.0f;
+
+	// Ratio between 0 and 1, 0 being quiet (furthest) and 1 being (loud) closest.
+	// Used in the calculation of GlobalVolume.
+	float GlobalVolumeRatio = 0.0f;
+
+private:
+
+	// Configure the vehicles engine audio
+	void SetupEngineAudio();
+
+	// Manage the audio for skidding.
+	void UpdateSkidAudio(float deltaSeconds);
+
+	// The index of the currently used engine sound.
+	int32 EngineAudioIndex;
+
+	// The current skidding sound in use.
+	TWeakObjectPtr<USoundCue> SkiddingSound;
+
+	// The last skidding sound that was used.
+	TWeakObjectPtr<USoundCue> LastSkiddingSound;
+
+	// Is the skid audio playing?
+	bool SkidAudioPlaying = false;
+
+	// The current skid audio volume.
+	float SkidAudioVolume = 0.0f;
+
+	// The last pitch used for the gear audio.
+	float LastGearPitch = 0.0f;
+
+#pragma endregion VehicleAudio
 
 #pragma region PickupsAvailable
 

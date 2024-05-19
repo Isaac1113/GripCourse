@@ -755,6 +755,27 @@ private:
 
 #pragma endregion VehiclePhysicsTweaks
 
+#pragma region VehicleAudio
+
+public:
+
+	// Update vehicle sound volumes for the local player(s).
+	void UpdateVehicleVolumes(float deltaSeconds);
+
+private:
+
+	// Variables used to control how the sound volume is adjusted per vehicle for local players.
+	// Maximum total volume across all vehicles that can be raised, 4 is equivalent to 4 vehicles very close to the camera.
+	float MaxGlobalVolume = 4.0f;
+
+	// The minimum distance at which the sound volume should start to decrease.
+	float MinVehicleVolumeDistance = 0.0f;
+
+	// The maximum distance at which the sound volume should be zeroed out.
+	float MaxVehicleVolumeDistance = 25000.0f;
+
+#pragma endregion VehicleAudio
+
 protected:
 
 	// Do some post initialization just before the game is ready to play.

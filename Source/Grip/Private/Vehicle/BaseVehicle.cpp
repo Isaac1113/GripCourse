@@ -80,6 +80,20 @@ ABaseVehicle::ABaseVehicle()
 		Elimination.AlertSound = asset.Object;
 	}
 
+#pragma region VehicleLaunch
+
+	{
+		static ConstructorHelpers::FObjectFinder<UParticleSystem> asset(TEXT("ParticleSystem'/Game/Vehicles/Effects/Launch/PS_VehicleLaunch.PS_VehicleLaunch'"));
+		LaunchEffectBlueprint = asset.Object;
+	}
+
+	{
+		static ConstructorHelpers::FObjectFinder<USoundCue> asset(TEXT("SoundCue'/Game/Audio/Sounds/Vehicles/A_VehicleLaunch_Cue.A_VehicleLaunch_Cue'"));
+		LaunchSound = asset.Object;
+	}
+
+#pragma endregion VehicleLaunch
+
 #pragma region VehicleSurfaceImpacts
 
 	{
@@ -185,6 +199,13 @@ void ABaseVehicle::SetupPlayerInputComponent(UInputComponent* inputComponent)
 		inputComponent->BindAction("LookRight", IE_Released, this, &ABaseVehicle::FrontViewCamera);
 
 #pragma endregion VehicleSpringArm
+
+#pragma region VehicleLaunch
+
+		inputComponent->BindAction("LaunchCharge", IE_Pressed, this, &ABaseVehicle::LaunchChargeInputOn);
+		inputComponent->BindAction("LaunchCharge", IE_Released, this, &ABaseVehicle::LaunchChargeInputOff);
+
+#pragma endregion VehicleLaunch
 
 		APlayerController* controller = Cast<APlayerController>(GetController());
 
@@ -606,6 +627,12 @@ void ABaseVehicle::Tick(float deltaSeconds)
 
 #pragma endregion VehicleBasicForces
 
+#pragma region VehicleAudio
+
+	UpdateSkidAudio(deltaSeconds);
+
+#pragma endregion VehicleAudio
+
 #pragma region VehicleSurfaceImpacts
 
 	UpdateHardCompression();
@@ -617,6 +644,12 @@ void ABaseVehicle::Tick(float deltaSeconds)
 	UpdateSurfaceEffects(deltaSeconds);
 
 #pragma endregion VehicleSurfaceEffects
+
+#pragma region VehicleLaunch
+
+	UpdateLaunch(deltaSeconds);
+
+#pragma endregion VehicleLaunch
 
 	UpdateIdleLock();
 
@@ -1382,6 +1415,23 @@ void ABaseVehicle::UpdatePowerAndGearing(float deltaSeconds, const FVector& xdir
 	{
 		int32 topGear = FMath::Max(VehicleEngineModel->GearPowerRatios.Num(), 7) - 1;
 
+#pragma region VehicleAudio
+
+		if (VehicleAudio != nullptr)
+		{
+			// Ensure we have enough gears in the audio, by replicating them where we need to.
+
+			while (VehicleAudio->Gears.Num() > 0 &&
+				VehicleAudio->Gears.Num() <= topGear)
+			{
+				VehicleAudio->Gears.Emplace(VehicleAudio->Gears[VehicleAudio->Gears.Num() - 1]);
+			}
+
+			topGear = VehicleAudio->Gears.Num() - 1;
+		}
+
+#pragma endregion VehicleAudio
+
 		float speed = GetSpeedKPH();
 		float measuredGearPosition = speed / GetGearSpeedRange();
 		float acceleration = (AI.Speed.DifferenceFromPerSecond(VehicleClock - 0.2f, VehicleClock, GetSpeedMPS() * 100.0f) / 100.0f);
@@ -1542,6 +1592,210 @@ void ABaseVehicle::UpdatePowerAndGearing(float deltaSeconds, const FVector& xdir
 		{
 			hasStarted |= AI.WillRevOnStartLine;
 		}
+
+#pragma region VehicleAudio
+
+		// Manage the engine audio.
+
+		if (VehicleAudio != nullptr)
+		{
+			TArray<FVehicleAudioGear>& gears = VehicleAudio->Gears;
+
+			if (gears.Num() > 0)
+			{
+				if (hasStarted == false)
+				{
+					// If we haven't started yet then idle.
+
+					Propulsion.IdleTransitionDirection = -1.0f;
+				}
+				else if (FMath::Abs(throttleInput) < KINDA_SMALL_NUMBER && speed < 10.0f)
+				{
+					// If we're going real slow and not applying power then idle.
+
+					Propulsion.IdleTransitionDirection = -1.0f;
+				}
+				else
+				{
+					// Otherwise don't idle.
+
+					Propulsion.IdleTransitionDirection = 1.0f;
+				}
+
+				if (grounded == false)
+				{
+					// We're in the air, so let the engine only run in its last gear
+					// when on the ground, but spin the engine up / down depending on
+					// whether the throttle is being pressed.
+
+					float airborneScale = 0.5f;
+					float gearPosition = Propulsion.LastGearPosition;
+
+					if (FMath::Abs(throttleInput) > 0.25f)
+					{
+						gearPosition = FMath::Min(gearPosition + (deltaSeconds * FMath::Abs(throttleInput) * airborneScale), 1.0f + revOverlap);
+						currentGearPosition = FMath::Max(currentGearPosition, gearPosition);
+					}
+					else
+					{
+						gearPosition = FMath::Max(gearPosition - (deltaSeconds * airborneScale), -revOverlap);
+						currentGearPosition = FMath::Min(currentGearPosition, gearPosition);
+					}
+
+					gear = Propulsion.LastGear;
+				}
+
+				Propulsion.LastGearPosition = currentGearPosition;
+
+				// Choose gear audio based on whether or not we're an AI driver.
+
+				FVehicleAudioGear& gearAudio = gears[FMath::Min(gear, gears.Num() - 1)];
+
+				if (PlayGameMode != nullptr &&
+					PlayGameMode->PastGameSequenceStart() == false)
+				{
+					// Simulated engine revving on the start line for AI bots.
+
+					currentGearPosition = AI.TorqueRoll;
+				}
+
+				// This is the normal gear pitch range.
+
+				float minPitch = gearAudio.MinEnginePitch;
+				float maxPitch = gearAudio.MaxEnginePitch;
+				float pitchRange = maxPitch - minPitch;
+
+				maxPitch -= pitchRange * revOverlap;
+				pitchRange = maxPitch - minPitch;
+
+				float enginePitch = FMath::Lerp(minPitch, maxPitch, currentGearPosition);
+
+				Propulsion.CurrentGearPosition = FMathEx::GetRatio(enginePitch, minPitch - (pitchRange * revOverlap), maxPitch + (pitchRange * revOverlap));
+
+				static FName rpmParameter("GearPosition");
+				static FName kphParameter("KPH");
+				static FName throttleParameter("Throttle");
+
+				float appliedThrottle = FMath::Lerp(FMath::Abs(Control.ThrottleInput), 0.0f, Control.BrakePosition);
+
+				if (Propulsion.LastGear != gear)
+				{
+					// Handle a gear change in the audio.
+
+					Propulsion.GearTime = 0.0f;
+
+					EngineAudioIndex ^= 1;
+
+					// Play the engine sound for the new gear.
+
+					GRIP_STOP_IF_PLAYING(PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex)]);
+
+					LastGearPitch = enginePitch;
+
+					PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex)]->SetSound(gearAudio.EngineSound);
+					PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex)]->SetVolumeMultiplier(0.0f);
+					PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex)]->SetPitchMultiplier(LastGearPitch);
+					PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex)]->SetFloatParameter(rpmParameter, Propulsion.CurrentGearPosition);
+					PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex)]->SetFloatParameter(kphParameter, speed);
+					PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex)]->SetFloatParameter(throttleParameter, appliedThrottle);
+					PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex)]->Play();
+
+					// Handle the gear change up / down sounds.
+
+					GearShiftAudio->SetSound((Propulsion.LastGear < gear) ? gearAudio.ChangeUpSound : gearAudio.ChangeDownSound);
+					GearShiftAudio->Play();
+				}
+				else
+				{
+					// Set the latest properties on the current gear.
+
+					LastGearPitch = FMathEx::GravitateToTarget(LastGearPitch, enginePitch, deltaSeconds * pitchRange * 2.0f);
+
+					PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex)]->SetPitchMultiplier(LastGearPitch);
+					PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex)]->SetFloatParameter(rpmParameter, Propulsion.CurrentGearPosition);
+					PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex)]->SetFloatParameter(kphParameter, speed);
+					PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex)]->SetFloatParameter(throttleParameter, appliedThrottle);
+				}
+
+				// Handle the fading in and out of gears.
+
+				float inVolume = 0.0f;
+				float outVolume = 0.0f;
+
+				if (Propulsion.GearTime >= VehicleAudio->EngineSoundFadeOutTime)
+				{
+					GRIP_STOP_IF_PLAYING(PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex ^ 1)]);
+				}
+				else
+				{
+					outVolume = 1.0f - (Propulsion.GearTime / VehicleAudio->EngineSoundFadeOutTime);
+				}
+
+				if (Propulsion.GearTime > VehicleAudio->EngineSoundDelayTime)
+				{
+					if ((Propulsion.GearTime - VehicleAudio->EngineSoundDelayTime) < VehicleAudio->EngineSoundFadeInTime)
+					{
+						inVolume = (Propulsion.GearTime - VehicleAudio->EngineSoundDelayTime) / VehicleAudio->EngineSoundFadeInTime;
+					}
+					else
+					{
+						inVolume = 1.0f;
+					}
+				}
+
+				// Handle the management of the piston engine idle sound.
+
+				// Fade into or out of idle, +1.0 being out, -1.0 being in.
+
+				Propulsion.IdleTransitionTime += deltaSeconds * Propulsion.IdleTransitionDirection * 3.0f;
+				Propulsion.IdleTransitionTime = FMath::Clamp(Propulsion.IdleTransitionTime, 0.0f, 1.0f);
+
+				if (PistonEngineAudio[GRIP_VEHICLE_AUDIO_PE_IDLE]->Sound != nullptr)
+				{
+					if (Propulsion.IdleTransitionTime == 1.0f)
+					{
+						GRIP_STOP_IF_PLAYING(PistonEngineAudio[GRIP_VEHICLE_AUDIO_PE_IDLE]);
+					}
+					else
+					{
+						PistonEngineAudio[GRIP_VEHICLE_AUDIO_PE_IDLE]->SetVolumeMultiplier((1.0f - Propulsion.IdleTransitionTime) * GlobalVolume);
+
+						GRIP_PLAY_IF_NOT_PLAYING(PistonEngineAudio[GRIP_VEHICLE_AUDIO_PE_IDLE]);
+					}
+				}
+
+				PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex)]->SetVolumeMultiplier(inVolume * Propulsion.IdleTransitionTime * GlobalVolume);
+				PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex ^ 1)]->SetVolumeMultiplier(outVolume * Propulsion.IdleTransitionTime * GlobalVolume);
+
+				// Handle the jet engine audio.
+
+				float pitch = FMath::Min(1.0f, GetSpeedKPH() / VehicleAudio->MaxJetEngineSpeed);
+
+				if (JetEngineAudio[GRIP_VEHICLE_AUDIO_JE_IDLE]->Sound != nullptr)
+				{
+					if (Propulsion.IdleTransitionTime == 1.0f)
+					{
+						GRIP_STOP_IF_PLAYING(JetEngineAudio[GRIP_VEHICLE_AUDIO_JE_IDLE]);
+					}
+					else
+					{
+						JetEngineAudio[GRIP_VEHICLE_AUDIO_JE_IDLE]->SetVolumeMultiplier((1.0f - Propulsion.IdleTransitionTime) * GlobalVolume);
+
+						GRIP_PLAY_IF_NOT_PLAYING(JetEngineAudio[GRIP_VEHICLE_AUDIO_JE_IDLE]);
+					}
+				}
+
+				if (JetEngineAudio[GRIP_VEHICLE_AUDIO_JE_THRUST]->Sound != nullptr)
+				{
+					JetEngineAudio[GRIP_VEHICLE_AUDIO_JE_THRUST]->SetVolumeMultiplier(Propulsion.IdleTransitionTime * GlobalVolume);
+					JetEngineAudio[GRIP_VEHICLE_AUDIO_JE_THRUST]->SetPitchMultiplier(FMath::Lerp(VehicleAudio->MinJetEnginePitch, VehicleAudio->MaxJetEnginePitch, pitch));
+					JetEngineAudio[GRIP_VEHICLE_AUDIO_JE_THRUST]->SetFloatParameter(kphParameter, speed);
+					JetEngineAudio[GRIP_VEHICLE_AUDIO_JE_THRUST]->SetFloatParameter(throttleParameter, appliedThrottle);
+				}
+			}
+		}
+
+#pragma endregion VehicleAudio
 
 		bool shiftedUp = (Propulsion.LastGear < gear);
 		bool shiftedDown = (Propulsion.LastGear > gear);
@@ -2082,6 +2336,7 @@ void ABaseVehicle::UpdateSurfaceEffects(float deltaSeconds)
 		float fadeOutTime = 1.5f;
 		float currentSpeed = GetSpeedKPH();
 		int32 maxSet = (Antigravity == true) ? 1 : 2;
+		bool justLaunched = LaunchCharging == ELaunchStage::Released || LaunchCharging == ELaunchStage::Discharging;
 
 		for (FVehicleWheel& wheel : Wheels.Wheels)
 		{
@@ -2121,6 +2376,11 @@ void ABaseVehicle::UpdateSurfaceEffects(float deltaSeconds)
 							// Reuse the last material if its contactless and we don't have one already.
 
 							surfaceType = wheel.LastSurfaceContact;
+						}
+
+						if (justLaunched == true)
+						{
+							surfaceType = EGameSurface::Launched;
 						}
 					}
 
@@ -2462,6 +2722,16 @@ void ABaseVehicle::UpdateHardCompression()
 		if (PlayGameMode != nullptr &&
 			PlayGameMode->PastGameSequenceStart() == true)
 		{
+
+#pragma region VehicleAudio
+
+			if (VehicleAudio != nullptr)
+			{
+				UGameplayStatics::SpawnSoundAttached(VehicleAudio->HardLandingSound, RootComponent, NAME_None, FVector::ZeroVector, EAttachLocation::KeepRelativeOffset, true, GlobalVolume);
+			}
+
+#pragma endregion VehicleAudio
+
 			if (GetSpeedKPH() > 400.0f &&
 				HardImpactEffect != nullptr &&
 				(FMath::Rand() & 1) == 0)
@@ -2607,7 +2877,19 @@ void ABaseVehicle::UpdateAnimatedBones(float deltaSeconds, const FVector& xdirec
 		}
 	}
 
-	VehicleOffset.Z = shiftVertical / (float)GetNumWheels();
+#pragma region VehicleLaunch
+
+	float launchOffset = FMathEx::EaseInOut(LaunchTimer);
+
+	if (LaunchCharging == ELaunchStage::Discharging)
+	{
+		launchOffset = LaunchTimer;
+	}
+
+	VehicleOffset.Z = launchOffset * ((IsFlipped() == true) ? +MaximumWheelTravel : -MaximumWheelTravel);
+	VehicleOffset.Z += shiftVertical / (float)GetNumWheels();
+
+#pragma endregion VehicleLaunch
 
 	// Apply a visual roll to add tilt to the vehicle when cornering and most
 	// of the wheels are on the ground.
@@ -2706,6 +2988,88 @@ void ABaseVehicle::UpdateVisualRotation(float deltaSeconds, const FVector& xdire
 
 #pragma endregion VehicleAnimation
 
+#pragma region VehicleLaunch
+
+/**
+* Update the launching of the vehicle.
+***********************************************************************************/
+
+void ABaseVehicle::UpdateLaunch(float deltaSeconds)
+{
+	switch (LaunchCharging)
+	{
+	case ELaunchStage::Charging:
+		if (IsPracticallyGrounded() == true)
+		{
+			LaunchTimer += deltaSeconds * 1.5f;
+			LaunchTimer = FMath::Min(1.0f, LaunchTimer);
+		}
+		break;
+
+	case ELaunchStage::Released:
+		if (IsPracticallyGrounded() == true)
+		{
+			if (PlayGameMode != nullptr &&
+				PlayGameMode->PastGameSequenceStart() == true)
+			{
+				FVector direction = GetLaunchDirection();
+
+				direction *= Physics.CurrentMass * LaunchTimer * 2000.0f;
+
+				if (GetSpeedKPH() < 50.0f ||
+					FVector::DotProduct(Physics.VelocityData.VelocityDirection, GetDirection()) < -0.5f)
+				{
+					VehicleMesh->AddImpulseAtLocation(direction * 0.666f, Wheels.RearAxlePosition);
+				}
+				else
+				{
+					VehicleMesh->AddImpulse(direction);
+				}
+
+#pragma region VehicleAudio
+
+				UGameplayStatics::SpawnSoundAttached(LaunchSound, VehicleMesh, NAME_None, FVector(ForceInit), EAttachLocation::KeepRelativeOffset, false, GlobalVolume);
+
+#pragma endregion VehicleAudio
+
+				FRotator rotation = GetActorRotation();
+
+				if (IsFlipped() == true)
+				{
+					rotation += FRotator(0.0f, 0.0f, 180.0f);
+					rotation.Normalize();
+				}
+
+				FVector normal = GetSurfaceNormal();
+				FVector location = GetSurfaceLocation();
+
+				location += normal * 100.0f;
+
+				UGameplayStatics::SpawnEmitterAtLocation(this, LaunchEffectBlueprint, location, rotation);
+
+				LastLaunchTime = GetVehicleClock();
+				LaunchSurfaceNormal = GuessSurfaceNormal();
+			}
+		}
+
+		LaunchCharging = ELaunchStage::Discharging;
+
+		break;
+
+	case ELaunchStage::Discharging:
+		LaunchTimer -= deltaSeconds * 5.0f;
+		LaunchTimer = FMath::Max(0.0f, LaunchTimer);
+
+		if (LaunchTimer == 0.0f)
+		{
+			LaunchCharging = ELaunchStage::Idle;
+		}
+		break;
+	}
+}
+
+#pragma endregion VehicleLaunch
+
 #pragma region VehicleDrifting
 
 /**
@@ -2763,6 +3127,124 @@ void ABaseVehicle::UpdateDriftingState(float deltaSeconds)
 }
 
 #pragma endregion VehicleDrifting
+
+#pragma region VehicleAudio
+
+/**
+* Configure the vehicle's engine audio.
+***********************************************************************************/
+
+void ABaseVehicle::SetupEngineAudio()
+{
+	GearShiftAudio = NewObject<UAudioComponent>(this, TEXT("GearShiftAudio")); GearShiftAudio->RegisterComponent();
+	GRIP_ATTACH(GearShiftAudio, RootComponent, "RootDummy");
+
+	EngineBoostAudio = NewObject<UAudioComponent>(this, TEXT("EngineBoostAudio")); EngineBoostAudio->RegisterComponent();
+	GRIP_ATTACH(EngineBoostAudio, RootComponent, "RootDummy");
+
+	SkiddingAudio = NewObject<UAudioComponent>(this, TEXT("SkiddingAudio")); SkiddingAudio->RegisterComponent();
+	GRIP_ATTACH(SkiddingAudio, RootComponent, "RootDummy");
+
+	for (int32 i = 0; i < 3; i++)
+	{
+		PistonEngineAudio.Emplace(NewObject<UAudioComponent>(this, FName(*FString::Printf(TEXT("PistonEngineAudio%d"), i)))); PistonEngineAudio[i]->RegisterComponent();
+		GRIP_ATTACH(PistonEngineAudio[i], RootComponent, "RootDummy");
+	}
+
+	for (int32 i = 0; i < 2; i++)
+	{
+		JetEngineAudio.Emplace(NewObject<UAudioComponent>(this, FName(*FString::Printf(TEXT("JetEngineAudio%d"), i)))); JetEngineAudio[i]->RegisterComponent();
+		GRIP_ATTACH(JetEngineAudio[i], RootComponent, "RootDummy");
+	}
+
+	if (VehicleAudio != nullptr)
+	{
+		SET_VEHICLE_SOUND_NON_SPATIALIZED(VehicleAudio->EngineBoostSound);
+		SET_VEHICLE_SOUND_NON_SPATIALIZED(VehicleAudio->EngineIdleSound);
+		SET_VEHICLE_SOUND_NON_SPATIALIZED(VehicleAudio->JetEngineIdleSound);
+		SET_VEHICLE_SOUND_NON_SPATIALIZED(VehicleAudio->JetEngineSound);
+
+		for (FVehicleAudioGear& gear : VehicleAudio->Gears)
+		{
+			SET_VEHICLE_SOUND_NON_SPATIALIZED(gear.EngineSound);
+			SET_VEHICLE_SOUND_NON_SPATIALIZED(gear.ChangeUpSound);
+			SET_VEHICLE_SOUND_NON_SPATIALIZED(gear.ChangeDownSound);
+		}
+
+		PistonEngineAudio[GRIP_VEHICLE_AUDIO_PE_IDLE]->SetSound(VehicleAudio->EngineIdleSound);
+		PistonEngineAudio[GRIP_VEHICLE_AUDIO_PE_IDLE]->SetVolumeMultiplier(GlobalVolume);
+		PistonEngineAudio[GRIP_VEHICLE_AUDIO_PE_IDLE]->Play();
+
+		if (VehicleAudio->Gears.Num() > 0)
+		{
+			FVehicleAudioGear& gear = VehicleAudio->Gears[0];
+
+			PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex)]->SetSound(gear.EngineSound);
+			PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex)]->SetVolumeMultiplier(0.0f);
+			PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex)]->SetPitchMultiplier(gear.MinEnginePitch);
+			PistonEngineAudio[GRIP_VEHICLE_AUDIO_GEAR_C(EngineAudioIndex)]->Play();
+		}
+
+		JetEngineAudio[GRIP_VEHICLE_AUDIO_JE_IDLE]->SetSound(VehicleAudio->JetEngineIdleSound);
+		JetEngineAudio[GRIP_VEHICLE_AUDIO_JE_IDLE]->SetVolumeMultiplier(GlobalVolume);
+		JetEngineAudio[GRIP_VEHICLE_AUDIO_JE_IDLE]->Play();
+
+		JetEngineAudio[GRIP_VEHICLE_AUDIO_JE_THRUST]->SetSound(VehicleAudio->JetEngineSound);
+		JetEngineAudio[GRIP_VEHICLE_AUDIO_JE_THRUST]->SetVolumeMultiplier(0.0f);
+		JetEngineAudio[GRIP_VEHICLE_AUDIO_JE_THRUST]->Play();
+	}
+}
+
+/**
+* Manage the audio for skidding.
+***********************************************************************************/
+
+void ABaseVehicle::UpdateSkidAudio(float deltaSeconds)
+{
+	if (SkiddingAudio != nullptr &&
+		IsVehicleDestroyed() == false)
+	{
+		{
+			SkidAudioVolume = FMathEx::GravitateToTarget(SkidAudioVolume, FMath::Max(Wheels.SkidAudioVolumeTarget, Wheels.SpinAudioVolumeTarget), deltaSeconds * 3.0f);
+		}
+
+		static FName skidStrength("Strength");
+
+		SkiddingAudio->SetVolumeMultiplier(SkidAudioVolume * GlobalVolume);
+		SkiddingAudio->SetFloatParameter(skidStrength, SkidAudioVolume);
+
+		if (SkidAudioVolume > 0.0f &&
+			SkidAudioPlaying == false &&
+			GRIP_POINTER_VALID(SkiddingSound) == true)
+		{
+			SkidAudioPlaying = true;
+
+			SET_VEHICLE_SOUND_NON_SPATIALIZED(SkiddingSound);
+			SkiddingAudio->SetSound(SkiddingSound.Get());
+			SkiddingAudio->Play();
+			LastSkiddingSound = SkiddingSound;
+		}
+		else if (SkidAudioVolume <= 0.0f &&
+			SkidAudioPlaying == true)
+		{
+			SkidAudioPlaying = false;
+
+			SkiddingAudio->Stop();
+		}
+
+		if (SkidAudioVolume > 0.0f &&
+			SkidAudioPlaying == true &&
+			GRIP_POINTER_VALID(SkiddingSound) == true &&
+			SkiddingSound.Get() != LastSkiddingSound.Get())
+		{
+			SET_VEHICLE_SOUND_NON_SPATIALIZED(SkiddingSound);
+			SkiddingAudio->SetSound(SkiddingSound.Get());
+			LastSkiddingSound = SkiddingSound;
+		}
+	}
+}
+
+#pragma endregion VehicleAudio
 
 #pragma region VehicleSpringArm
 
@@ -3424,6 +3906,13 @@ void ABaseVehicle::CompletePostSpawn()
 				}
 			}
 		}
+
+#pragma region VehicleAudio
+
+		SetupEngineAudio();
+
+#pragma endregion VehicleAudio
+
 	}
 }
 

@@ -1097,6 +1097,12 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 			}
 		}
 
+#pragma region VehicleLaunch
+
+		if ((GetVehicleClock() - LastLaunchTime) > mitigationTime)
+
+#pragma endregion VehicleLaunch
+
 		{
 			float scale = Physics.VelocityPitchMitigationTime * Physics.VelocityPitchMitigationAmount;
 
@@ -1142,6 +1148,12 @@ int32 ABaseVehicle::UpdateContactSensors(float deltaSeconds, const FTransform& t
 	static FName noSurface("None");
 
 	Wheels.SurfaceName = noSurface;
+
+#pragma region VehicleAudio
+
+	SkiddingSound = nullptr;
+
+#pragma endregion VehicleAudio
 
 	float physicsClock = Physics.Timing.TickSum;
 	int32 numWheels = Wheels.Wheels.Num();
@@ -1255,6 +1267,13 @@ int32 ABaseVehicle::UpdateContactSensors(float deltaSeconds, const FTransform& t
 					EGameSurface surfaceType = sensor.GetGameSurface();
 
 					Wheels.SurfaceName = GetNameFromSurfaceType(surfaceType);
+
+#pragma region VehicleAudio
+
+					SkiddingSound = DrivingSurfaceCharacteristics->GetSkiddingSound(surfaceType);
+
+#pragma endregion VehicleAudio
+
 				}
 
 				if (wheel.HasRearPlacement() == true)
@@ -2102,6 +2121,20 @@ FVector ABaseVehicle::GetDownForce()
 		invDistanceScale = FMath::Min(invDistanceScale / maxDistance, 1.0f);
 		invDistanceScale = FMath::Pow(invDistanceScale, 4.0f);
 	}
+
+#pragma region VehicleLaunch
+
+	// Remove down force just after a vehicle launch.
+
+	float jumpTime = GetVehicleClock() - LastLaunchTime;
+
+	if (jumpTime < 2.0f &&
+		FVector::DotProduct(GuessSurfaceNormal(), LaunchSurfaceNormal) > -0.5f)
+	{
+		scale *= FMathEx::GetRatio(jumpTime - 1.0f, 0.0f, 1.0f);
+	}
+
+#pragma endregion VehicleLaunch
 
 	// Apply all the constituents together.
 

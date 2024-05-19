@@ -497,6 +497,13 @@ void APlayGameMode::Tick(float deltaSeconds)
 		UpdateUILoading();
 		break;
 	}
+
+#pragma region VehicleAudio
+
+	UpdateVehicleVolumes(deltaSeconds);
+
+#pragma endregion VehicleAudio
+
 }
 
 /**
@@ -932,3 +939,174 @@ bool APlayGameMode::ShouldActorLimitCollisionResponse(AActor* actor)
 #endif // GRIP_ANTI_SKYWARD_LAUNCH
 
 #pragma endregion VehiclePhysicsTweaks
+
+#pragma region VehicleAudio
+
+/**
+* Increase the sound volume of vehicles that are close to the local player.
+* This will be capped at a max overall volume to keep things from getting drowned
+* out.
+***********************************************************************************/
+
+void APlayGameMode::UpdateVehicleVolumes(float deltaSeconds)
+{
+	WatchedVehicles.Reset();
+
+	// Get a list of local player camera locations.
+
+	TArray<FVector, TInlineAllocator<16>> localPositions;
+
+	for (ABaseVehicle* vehicle : Vehicles)
+	{
+		if (vehicle->LocalPlayerIndex >= 0)
+		{
+			FMinimalViewInfo desiredView;
+
+			vehicle->Camera->GetCameraViewNoPostProcessing(0.0f, desiredView);
+
+			localPositions.Emplace(desiredView.Location);
+
+			ABaseVehicle* target = vehicle->CameraTarget();
+
+			if (WatchedVehicles.Contains(target) == false)
+			{
+				WatchedVehicles.Emplace(target);
+			}
+		}
+	}
+
+#if !UE_BUILD_SHIPPING
+	// If this isn't a shipping build, and our pawn is a spectator pawn, then override
+	// the camera locations with just one, single location.
+
+	APlayerController* controller = UGameplayStatics::GetPlayerController(GetWorld(), 0);
+
+	if (controller != nullptr)
+	{
+		APawn* pawn = controller->GetPawn();
+
+		if (IsValid(pawn) == true &&
+			pawn->IsA<ASpectatorPawn>() == true)
+		{
+			localPositions.Empty();
+			WatchedVehicles.Empty();
+
+			localPositions.Emplace(pawn->GetActorLocation());
+		}
+	}
+#endif // !UE_BUILD_SHIPPING
+
+	if (localPositions.Num() > 0)
+	{
+		TArray<ABaseVehicle*, TInlineAllocator<16>> volumeVehicles;
+
+		for (ABaseVehicle* vehicle : Vehicles)
+		{
+			if (vehicle->IsVehicleDestroyed() == false)
+			{
+				// Find the shortest distance to one of the player cameras.
+
+				vehicle->GlobalVolumeRatio = 0.0f;
+
+				for (FVector& location : localPositions)
+				{
+					// Normalize the distance of the vehicle between the min and max volume distances.
+
+					float size = (vehicle->GetActorLocation() - location).Size();
+					float volume = 1.0f - FMathEx::GetRatio(size, MinVehicleVolumeDistance, MaxVehicleVolumeDistance);
+
+					vehicle->GlobalVolumeRatio = FMath::Max(vehicle->GlobalVolumeRatio, volume);
+				}
+
+				volumeVehicles.Emplace(vehicle);
+			}
+		}
+
+		// For each vehicle, GlobalVolumeRatio is now the normalized linear proximity to the nearest listener
+		// 1 being within MinVehicleVolumeDistance and 0 being MaxVehicleVolumeDistance or further away.
+
+		int32 numVehicles = volumeVehicles.Num();
+
+		if (numVehicles > 0)
+		{
+			// Sort the vehicles based on distance to camera, closest and therefore loudest first.
+
+			volumeVehicles.Sort([this] (const ABaseVehicle& object1, const ABaseVehicle& object2)
+				{
+					return object1.GlobalVolumeRatio > object2.GlobalVolumeRatio;
+				});
+
+			// Fit the vehicles to the range of the vehicles.
+
+			float min = volumeVehicles[volumeVehicles.Num() - 1]->GlobalVolumeRatio;
+			float max = volumeVehicles[0]->GlobalVolumeRatio;
+			float switchRatio = FMathEx::GetRatio(numVehicles / MaxGlobalVolume, 1.0f, 2.0f);
+
+			for (ABaseVehicle* vehicle : volumeVehicles)
+			{
+				if (min != max)
+				{
+					vehicle->GlobalVolumeRatio = FMath::Lerp(1.0f, (vehicle->GlobalVolumeRatio - min) / (max - min), switchRatio);
+				}
+				else
+				{
+					vehicle->GlobalVolumeRatio = 1.0f;
+				}
+			}
+
+			// Apply a bell curve to that fitting, so volume is biased more to the closest vehicles.
+
+			float sum = 0.0f;
+			float watchedSum = 0.0f;
+
+			for (ABaseVehicle* vehicle : volumeVehicles)
+			{
+				if (WatchedVehicles.Contains(vehicle) == true)
+				{
+					// A watched vehicle is always top volume.
+
+					vehicle->GlobalVolumeRatio = 1.0f;
+
+					watchedSum += vehicle->GlobalVolumeRatio;
+				}
+				else
+				{
+					// Apply a bell curve to the volume ratio here.
+
+					vehicle->GlobalVolumeRatio = FMath::Sin(vehicle->GlobalVolumeRatio * PI * 0.5f);
+					vehicle->GlobalVolumeRatio *= vehicle->GlobalVolumeRatio;
+					vehicle->GlobalVolumeRatio *= vehicle->GlobalVolumeRatio;
+
+					sum += vehicle->GlobalVolumeRatio;
+				}
+			}
+
+			// Normalize the unwatched vehicle volumes to fit the available volume space.
+
+			float maxGlobalVolume = MaxGlobalVolume - watchedSum;
+
+			if (sum > 0.0f)
+			{
+				for (ABaseVehicle* vehicle : volumeVehicles)
+				{
+					if (WatchedVehicles.Contains(vehicle) == false)
+					{
+						vehicle->GlobalVolumeRatio = FMath::Min(1.0f, (vehicle->GlobalVolumeRatio / sum) * maxGlobalVolume);
+					}
+				}
+			}
+
+			// Adjust the volume level of all vehicles to these new normalized values.
+			// Do this swiftly but not instantaneously.
+
+			float ratio = FMathEx::GetSmoothingRatio(0.9f, deltaSeconds);
+
+			for (ABaseVehicle* vehicle : volumeVehicles)
+			{
+				vehicle->GlobalVolume = FMath::Lerp(vehicle->GlobalVolumeRatio, vehicle->GlobalVolume, ratio);
+			}
+		}
+	}
+}
+
+#pragma endregion VehicleAudio

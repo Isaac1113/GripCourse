@@ -66,7 +66,7 @@ void UDrivingSurfaceImpactCharacteristics::SpawnImpact(ABaseVehicle* vehicle, co
 	{
 		// Spawn the sound effect.
 
-		UGameplayStatics::PlaySoundAtLocation(vehicle, sound, location);
+		UGameplayStatics::PlaySoundAtLocation(vehicle, sound, location, vehicle->GlobalVolume);
 	}
 }
 
