@@ -274,6 +274,14 @@ void APlayGameMode::BeginPlay()
 		GlobalGameState->GeneralOptions.NumberOfLaps = 4;
 	}
 
+#pragma region NavigationSplines
+
+	// Record all of the pursuit splines in the level.
+
+	DeterminePursuitSplines();
+
+#pragma endregion NavigationSplines
+
 	// Find a master racing spline against which we can measure race distance.
 
 	if (MasterRacingSpline.IsValid() == false)
@@ -445,6 +453,39 @@ UPursuitSplineComponent* APlayGameMode::DetermineMasterRacingSpline(const FName&
 
 void APlayGameMode::BuildPursuitSplines(bool check, const FName& navigationLayer, UWorld* world, UGlobalGameState* gameState, UPursuitSplineComponent* masterRacingSpline)
 {
+
+#pragma region NavigationSplines
+
+	if (check == false)
+	{
+		UE_LOG(GripLog, Log, TEXT("APlayGameMode::BuildPursuitSplines"));
+	}
+
+	// Build all of the pursuit splines.
+
+	for (TActorIterator<APursuitSplineActor> actorItr(world); actorItr; ++actorItr)
+	{
+		if ((gameState != nullptr && FWorldFilter::IsValid(*actorItr, gameState) == true) ||
+			(gameState == nullptr && FWorldFilter::IsValid(*actorItr, navigationLayer) == true))
+		{
+			TArray<UActorComponent*> splines;
+
+			(*actorItr)->GetComponents(UPursuitSplineComponent::StaticClass(), splines);
+
+			for (UActorComponent* component : splines)
+			{
+				UPursuitSplineComponent* spline = Cast<UPursuitSplineComponent>(component);
+
+				if (check == false)
+				{
+					spline->Build(false, false, false);
+				}
+			}
+		}
+	}
+
+#pragma endregion NavigationSplines
+
 }
 
 /**
@@ -453,6 +494,311 @@ void APlayGameMode::BuildPursuitSplines(bool check, const FName& navigationLayer
 
 void APlayGameMode::EstablishPursuitSplineLinks(bool check, const FName& navigationLayer, UWorld* world, UGlobalGameState* gameState, UPursuitSplineComponent* masterRacingSpline)
 {
+
+#pragma region NavigationSplines
+
+	TArray<APursuitSplineActor*> validSplines;
+
+	// Go through every spline in the world to find a master or master racing spline while also
+	// building a list of valid splines.
+
+	for (TActorIterator<APursuitSplineActor> actorItr0(world); actorItr0; ++actorItr0)
+	{
+		if ((gameState != nullptr && FWorldFilter::IsValid(*actorItr0, gameState) == true) ||
+			(gameState == nullptr && FWorldFilter::IsValid(*actorItr0, navigationLayer) == true))
+		{
+			bool useSpline = false;
+			TArray<UActorComponent*> splines;
+
+			(*actorItr0)->GetComponents(UPursuitSplineComponent::StaticClass(), splines);
+
+			for (UActorComponent* component : splines)
+			{
+				UPursuitSplineComponent* spline = Cast<UPursuitSplineComponent>(component);
+
+				spline->ClearSplineLinks();
+
+				if (spline->GetNumberOfSplinePoints() > 1)
+				{
+					useSpline = true;
+				}
+			}
+
+			if (useSpline == true)
+			{
+				validSplines.Emplace(*actorItr0);
+			}
+		}
+	}
+
+	validSplines.StableSort([] (const APursuitSplineActor& object1, const APursuitSplineActor& object2)
+		{
+			return object1.GetName() < object2.GetName();
+		});
+
+	// Now go through every spline in the world and establish their links.
+
+	for (APursuitSplineActor* validSpline0 : validSplines)
+	{
+		TArray<UActorComponent*> splines;
+
+		validSpline0->GetComponents(UPursuitSplineComponent::StaticClass(), splines);
+
+		for (UActorComponent* component : splines)
+		{
+			UPursuitSplineComponent* spline = Cast<UPursuitSplineComponent>(component);
+
+			for (APursuitSplineActor* validSpline1 : validSplines)
+			{
+				validSpline1->EstablishPursuitSplineLinks(spline);
+			}
+		}
+	}
+
+	if (check == true)
+	{
+		for (APursuitSplineActor* validSpline0 : validSplines)
+		{
+			TArray<UActorComponent*> splines;
+
+			validSpline0->GetComponents(UPursuitSplineComponent::StaticClass(), splines);
+
+			for (UActorComponent* component : splines)
+			{
+				UPursuitSplineComponent* spline = Cast<UPursuitSplineComponent>(component);
+
+				if (spline->DeadStart == true)
+				{
+					UE_LOG(GripLogPursuitSplines, Warning, TEXT("Pursuit spline %s is a dead-start"), *spline->ActorName);
+				}
+
+				if (spline->DeadEnd == true)
+				{
+					UE_LOG(GripLogPursuitSplines, Warning, TEXT("Pursuit spline %s is a dead-end"), *spline->ActorName);
+				}
+
+				if (spline->SplineLinks.Num() == 0)
+				{
+					UE_LOG(GripLogPursuitSplines, Warning, TEXT("Pursuit spline %s has no links"), *spline->ActorName);
+				}
+				else
+				{
+					UE_LOG(GripLogPursuitSplines, Log, TEXT("Pursuit spline %s of length %d has the following links:"), *spline->ActorName, (int32)spline->GetSplineLength());
+				}
+
+				for (FSplineLink& spline2 : spline->SplineLinks)
+				{
+					UE_LOG(GripLogPursuitSplines, Log, TEXT("  %s (%s) %d on this, %d on next"), *spline2.Spline->ActorName, ((spline2.ForwardLink == true) ? TEXT("forward link") : TEXT("passive link")), (int32)spline2.ThisDistance, (int32)spline2.NextDistance);
+				}
+			}
+		}
+	}
+
+	float minDistance = 10.0f * 100.0f;
+
+	for (APursuitSplineActor* validSpline0 : validSplines)
+	{
+		TArray<UActorComponent*> splines;
+
+		validSpline0->GetComponents(UPursuitSplineComponent::StaticClass(), splines);
+
+		for (UActorComponent* component : splines)
+		{
+			UPursuitSplineComponent* spline = Cast<UPursuitSplineComponent>(component);
+
+			// So now the spline is fully loaded with all the splines linked to it. We now need to go
+			// through and aggregate the links into branch points where a decision needs to be made
+			// by the AI driver as to which path to take.
+
+			TArray<FSplineLink> links;
+
+			for (FSplineLink link : spline->SplineLinks)
+			{
+				if (link.LinkIsRouteChoice() == true)
+				{
+					links.Emplace(link);
+				}
+			}
+
+			spline->RouteChoices.Empty();
+
+			while (links.Num() > 0)
+			{
+				FRouteChoice choice;
+				FSplineLink link = links[0];
+
+				choice.DecisionDistance = link.ThisDistance;
+				choice.SplineLinks.Emplace(link);
+
+				links.RemoveAt(0);
+
+				for (int32 i = 0; i < links.Num(); i++)
+				{
+					FSplineLink nextLink = links[i];
+
+					if (FMath::Abs(nextLink.ThisDistance - link.ThisDistance) < minDistance)
+					{
+						choice.SplineLinks.Emplace(nextLink);
+						choice.DecisionDistance = FMath::Min(choice.DecisionDistance, nextLink.ThisDistance);
+						links.RemoveAt(i--);
+					}
+				}
+
+				// We don't want to make a route change the moment you get onto a new spline as this
+				// is probably just in the positioning CEP that we use and was probably already part
+				// of the route choice to get onto this spline from the previous spline.
+
+				if (choice.DecisionDistance > minDistance)
+				{
+					spline->RouteChoices.Emplace(choice);
+				}
+			}
+		}
+	}
+
+	// Go through every spline in the world and compute the extended point data.
+
+	if (masterRacingSpline != nullptr)
+	{
+		// Calculate the master racing spline distances by branching forwards from the master racing spline
+		// onto all of it's connected splines.
+
+		float masterRacingSplineLength = masterRacingSpline->GetSplineLength();
+
+		masterRacingSpline->CalculateMasterSplineDistances(masterRacingSpline, masterRacingSplineLength, 0.0f, 0, check);
+
+		// Now go through every spline in the world and check that we've master spline distances.
+
+		for (APursuitSplineActor* validSpline0 : validSplines)
+		{
+			TArray<UActorComponent*> splineComponents;
+
+			validSpline0->GetComponents(UPursuitSplineComponent::StaticClass(), splineComponents);
+
+			for (UActorComponent* component : splineComponents)
+			{
+				UPursuitSplineComponent* splineComponent = Cast<UPursuitSplineComponent>(component);
+
+				// If this is a closed spline but hasn't any master spline distances then calculate them now.
+				// This will also calculate distances for any branches extending from the closed splines.
+
+				if (splineComponent->IsClosedLoop() == true &&
+					splineComponent->HasMasterSplineDistances() == false)
+				{
+					float distance = masterRacingSpline->GetNearestDistance(splineComponent->GetWorldLocationAtDistanceAlongSpline(0.0f));
+
+					splineComponent->CalculateMasterSplineDistances(masterRacingSpline, masterRacingSplineLength, distance, 0, check);
+				}
+			}
+		}
+
+		for (int32 degreesOfSeparation = 0; degreesOfSeparation < 4; degreesOfSeparation++)
+		{
+			// degreesOfSeparation
+			// 0 = directly connected at both ends
+			// 1 = directly connected at least one end, and the other connected through one degree of separation
+			// 2 = indirectly connected at both ends through one degree of separation
+			// 3 = fall-back computation
+
+			bool result = false;
+
+			do
+			{
+				result = false;
+
+				for (APursuitSplineActor* validSpline0 : validSplines)
+				{
+					TArray<UActorComponent*> splineComponents;
+
+					validSpline0->GetComponents(UPursuitSplineComponent::StaticClass(), splineComponents);
+
+					for (UActorComponent* component : splineComponents)
+					{
+						UPursuitSplineComponent* splineComponent = Cast<UPursuitSplineComponent>(component);
+
+						// If this is not a closed spline but hasn't any master spline distances then calculate them now.
+						// This will also calculate distances for any branches extending from the closed splines.
+
+						if (splineComponent->IsClosedLoop() == false &&
+							splineComponent->HasMasterSplineDistances() == false)
+						{
+							float distance = masterRacingSpline->GetNearestDistance(splineComponent->GetWorldLocationAtDistanceAlongSpline(0.0f));
+
+							result |= splineComponent->CalculateMasterSplineDistances(masterRacingSpline, masterRacingSplineLength, distance, degreesOfSeparation, check);
+						}
+					}
+				}
+			}
+			while (result == true);
+		}
+
+		for (APursuitSplineActor* validSpline0 : validSplines)
+		{
+			TArray<UActorComponent*> splineComponents;
+
+			validSpline0->GetComponents(UPursuitSplineComponent::StaticClass(), splineComponents);
+
+			for (UActorComponent* component : splineComponents)
+			{
+				UPursuitSplineComponent* splineComponent = Cast<UPursuitSplineComponent>(component);
+
+				if (splineComponent->Type == EPursuitSplineType::General)
+				{
+					// Check for splines that weren't linked up at all.
+
+					if (check == true)
+					{
+						if (splineComponent->HasMasterSplineDistances() == false)
+						{
+							UE_LOG(GripLogPursuitSplines, Warning, TEXT("Pursuit spline %s may not be connected up properly (ignore for non-Race maps)."), *splineComponent->ActorName);
+
+							if (splineComponent->DeadStart == true)
+							{
+								UE_LOG(GripLogPursuitSplines, Warning, TEXT("It appears to be a dead start."));
+							}
+							else
+							{
+								UE_LOG(GripLogPursuitSplines, Warning, TEXT("It doesn't appear to be a dead start."));
+							}
+						}
+					}
+				}
+
+				if (splineComponent->HasMasterSplineDistances() == false)
+				{
+					float distance = masterRacingSpline->GetNearestDistance(splineComponent->GetWorldLocationAtDistanceAlongSpline(0.0f));
+
+					splineComponent->CalculateMasterSplineDistances(masterRacingSpline, masterRacingSplineLength, distance, 3, check);
+				}
+			}
+		}
+
+		int32 attempts = 0;
+		bool recalibrated = false;
+
+		do
+		{
+			recalibrated = false;
+
+			for (APursuitSplineActor* validSpline0 : validSplines)
+			{
+				TArray<UActorComponent*> splineComponents;
+
+				validSpline0->GetComponents(UPursuitSplineComponent::StaticClass(), splineComponents);
+
+				for (UActorComponent* component : splineComponents)
+				{
+					UPursuitSplineComponent* splineComponent = Cast<UPursuitSplineComponent>(component);
+
+					recalibrated |= splineComponent->CalculateMasterSplineDistances(masterRacingSpline, masterRacingSplineLength, 0.0f, 2, check, 1, attempts);
+				}
+			}
+		}
+		while ((recalibrated == true || attempts == 0) && (attempts++ < 10));
+	}
+
+#pragma endregion NavigationSplines
+
 }
 
 /**
@@ -647,6 +993,32 @@ AActor* APlayGameMode::ChoosePlayerStartProperly(AController* player, int32 maxP
 			}
 		}
 
+#pragma region NavigationSplines
+
+		// Now sort the start points by main spline distance.
+
+		if (GlobalGameState != nullptr &&
+			MasterRacingSpline.IsValid() == false)
+		{
+			MasterRacingSpline = DetermineMasterRacingSpline(FName(*GlobalGameState->TransientGameState.NavigationLayer), world, GlobalGameState);
+		}
+
+		if (MasterRacingSpline.IsValid() == true)
+		{
+			UnusedStartpoints.Sort([this] (const APlayerStart& object1, const APlayerStart& object2)
+				{
+					FVector l1 = object1.GetActorLocation();
+					FVector l2 = object2.GetActorLocation();
+
+					float d1 = MasterRacingSpline->GetNearestDistance(l1);
+					float d2 = MasterRacingSpline->GetNearestDistance(l2);
+
+					return (d2 < d1);
+				});
+		}
+
+#pragma endregion NavigationSplines
+
 		for (TActorIterator<APlayerStart> itr(world); itr; ++itr)
 		{
 			APlayerStart* playerStart = *itr;
@@ -818,6 +1190,52 @@ bool APlayGameMode::HaveAllPlayersFinished() const
 
 float APlayGameMode::GetEventProgress()
 {
+
+#pragma region NavigationSplines
+
+	switch (GlobalGameState->GamePlaySetup.DrivingMode)
+	{
+	case EDrivingMode::Race:
+	{
+		float minProgress = 1.0f;
+		TArray<ABaseVehicle*>& vehicles = GetVehicles();
+
+		for (ABaseVehicle* vehicle : vehicles)
+		{
+			if (vehicle->IsAIVehicle() == false &&
+				vehicle->IsVehicleDestroyed() == false)
+			{
+				minProgress = FMath::Min(minProgress, vehicle->GetEventProgress());
+			}
+		}
+
+		return minProgress;
+	}
+	break;
+
+	case EDrivingMode::Elimination:
+	{
+		TArray<ABaseVehicle*>& vehicles = GetVehicles();
+
+		for (ABaseVehicle* vehicle : vehicles)
+		{
+			if (vehicle->IsAIVehicle() == false &&
+				vehicle->IsVehicleDestroyed() == false)
+			{
+				float totalTime = GRIP_ELIMINATION_SECONDS * GetNumOpponents();
+				float gameTime = GetRealTimeGameClock();
+
+				return FMath::Min(gameTime / totalTime, 1.0f);
+			}
+		}
+
+		return 1.0f;
+	}
+	break;
+	}
+
+#pragma endregion NavigationSplines
+
 	return 0.0f;
 }
 

@@ -32,4 +32,23 @@ public:
 	// Is the spline visualization currently enabled?
 	UPROPERTY(EditAnywhere, Category = Rendering)
 		bool VisualisationEnabled = true;
+
+#pragma region NavigationSplines
+
+	// Find the nearest spline component attached to this actor to a world space location.
+	bool FindNearestSpline(const FVector& location, UAdvancedSplineComponent*& nearestSpline, float& distance) const;
+
+	// Find the nearest spline for a point in world space.
+	static bool FindNearestSpline(const FVector& location, UWorld* world, UAdvancedSplineComponent*& nearestSpline, float& distanceAway, float& distanceAlong);
+
+	// Find the nearest spline for a point in world space.
+	static bool FindNearestSplines(const FVector& location, UWorld* world, TArray<TWeakObjectPtr<UAdvancedSplineComponent>>& nearestSplines, TArray<float>& splineDistances);
+
+protected:
+
+	// Do some post initialization just before the game is ready to play.
+	virtual void PostInitializeComponents() override;
+
+#pragma endregion NavigationSplines
+
 };

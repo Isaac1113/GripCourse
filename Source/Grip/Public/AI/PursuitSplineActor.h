@@ -65,4 +65,30 @@ public:
 
 	UFUNCTION(BlueprintImplementableEvent, BlueprintCallable, Category = "Default")
 		void UpdateVisualisation();
+
+#pragma region NavigationSplines
+
+	// Determine any splines that this actor has which can link onto the given spline.
+	bool EstablishPursuitSplineLinks(UPursuitSplineComponent* spline) const;
+
+	// Calculate the extended point data by examining the scene around the spline.
+	bool Build(bool fromMenu);
+
+	// Distance between which we should consider spline links part of the same junction for route switching.
+	static const float MinDistanceForSplineLinksSquared;
+
+protected:
+
+	// Do some shutdown when the actor is being destroyed.
+	virtual void EndPlay(const EEndPlayReason::Type endPlayReason) override;
+
+private:
+
+#if WITH_EDITORONLY_DATA
+	// When an object has been selected in the Editor, handle the selected state of the pursuit spline mesh component.
+	void OnObjectSelected(UObject* object);
+#endif
+
+#pragma endregion NavigationSplines
+
 };

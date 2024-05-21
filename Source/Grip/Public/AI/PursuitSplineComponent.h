@@ -195,6 +195,112 @@ public:
 	static const int32 NumDistances = 32;
 };
 
+#pragma region NavigationSplines
+
+/**
+* Structure for describing a distance along a spline.
+***********************************************************************************/
+
+struct FSplineDistance
+{
+public:
+
+	FSplineDistance(UPursuitSplineComponent* spline, float distance)
+		: Spline(spline)
+		, Distance(distance)
+	{ }
+
+	// The spline.
+	UPursuitSplineComponent* Spline = nullptr;
+
+	// The distance along the spline.
+	float Distance = 0.0f;
+};
+
+/**
+* Structure for a link between two splines.
+***********************************************************************************/
+
+struct FSplineLink
+{
+public:
+
+	FSplineLink(TWeakObjectPtr<UPursuitSplineComponent> spline, float thisDistance, float nextDistance, bool forwardLink = false)
+		: Spline(spline)
+		, ThisDistance(thisDistance)
+		, NextDistance(nextDistance)
+		, ForwardLink(forwardLink)
+	{ }
+
+	// Is the spline and distance referenced by this link valid for a route choice decision?
+	bool LinkIsRouteChoice() const;
+
+	// Is the spline link broadly the same as another?
+	bool operator == (const FSplineLink& other) const
+	{ return (Spline == other.Spline && FMath::Abs(ThisDistance - other.ThisDistance) < 100.0f && FMath::Abs(NextDistance - other.NextDistance) < 100.0f); }
+
+	// The spline to link to.
+	TWeakObjectPtr<UPursuitSplineComponent> Spline;
+
+	// The distance at which Spline can be found on the parent spline (where this link is contained).
+	float ThisDistance = 0.0f;
+
+	// And the next (or other) distance of this junction on Spline itself.
+	float NextDistance = 0.0f;
+
+	// Is this a forward link onto Spline?
+	bool ForwardLink = false;
+};
+
+/**
+* Structure for a route choice, a set of splines that can be taken at a branch point
+* on a spline.
+***********************************************************************************/
+
+struct FRouteChoice
+{
+public:
+
+	// The distance along a spline at which the decision needs to be made.
+	float DecisionDistance = 0.0f;
+
+	// The splines that are available to be taken.
+	TArray<FSplineLink> SplineLinks;
+};
+
+/**
+* Structure for following a sequence of pursuit splines that form a route.
+***********************************************************************************/
+
+struct FRouteFollower
+{
+public:
+
+	// Is this follower attached to a spline right now?
+	bool IsValid() const
+	{ return GRIP_POINTER_VALID(NextSpline); }
+
+	// Get the average tunnel diameter over a set distance.
+	float GetTunnelDiameterOverDistance(float distance, float overDistance, int32 direction, bool minimum) const;
+
+	// The spline that the follower is currently on.
+	TWeakObjectPtr<UPursuitSplineComponent> ThisSpline;
+
+	// The spline that the follower is currently aiming for.
+	TWeakObjectPtr<UPursuitSplineComponent> NextSpline;
+
+	// The distance along the spline that the follower is currently on.
+	float ThisDistance = 0.0f;
+
+	// The distance along the spline that the follower is currently aiming for.
+	float NextDistance = 0.0f;
+
+	// The distance on the next spline that switching transfers to.
+	float NextSwitchDistance = 0.0f;
+};
+
+#pragma endregion NavigationSplines
+
 /**
 * Class for a pursuit spline component, normally one per actor.
 ***********************************************************************************/
@@ -240,21 +346,148 @@ public:
 	// Get the maneuvering width at a point along a spline.
 	UFUNCTION(BlueprintCallable, Category = Spline)
 		float GetWidthAtSplinePoint(int32 point) const
-	{ return 0.0f; }
+	{
+		return GetPursuitPoint(point).ManeuveringWidth;
+	}
 
 	// Get the optimum speed at a point along a spline.
 	UFUNCTION(BlueprintCallable, Category = Spline)
 		float GetOptimumSpeedAtSplinePoint(int32 point) const
-	{ return 0.0f; }
+	{
+		return FMath::Min(GetPursuitPoint(point).OptimumSpeed, 1000.0f);
+	}
 
 	// Get the minimum speed at a point along a spline.
 	UFUNCTION(BlueprintCallable, Category = Spline)
 		float GetMinimumSpeedAtSplinePoint(int32 point) const
-	{ return 0.0f; }
+	{
+		return GetPursuitPoint(point).MinimumSpeed;
+	}
 
 	UFUNCTION(BlueprintCallable, Category = Spline)
 		void EmptySplineMeshes()
-	{ }
+	{
+		PursuitSplineMeshComponents.Empty();
+	}
+
+#pragma region NavigationSplines
+
+public:
+
+	// Post initialize the component.
+	virtual void PostInitialize() override;
+
+	// Get the average tunnel diameter over a set distance.
+	float GetTunnelDiameterOverDistance(float distance, float overDistance, int32 direction, bool minimum) const;
+
+	// Get the tunnel diameter at a distance along a spline.
+	float GetTunnelDiameterAtDistanceAlongSpline(float distance) const;
+
+	// Get the master distance at a distance along a spline.
+	float GetMasterDistanceAtDistanceAlongSpline(float distance, float masterSplineLength) const;
+
+	// Calculate distances along the master spline for this spline and each of its links.
+	bool CalculateMasterSplineDistances(UPursuitSplineComponent* masterSpline, float masterSplineLength, float startingDistance, int32 degreesOfSeparation, bool report, int32 recalibrate = 0, int32 recalibrationAttempt = 0);
+
+	// Have we calculated the master spline distances for this particular spline?
+	bool HasMasterSplineDistances() const
+	{ const auto& pointData = GetPursuitPointExtendedData(); return (pointData.Num() == 0 || pointData[0].MasterSplineDistance >= 0.0f); }
+
+	// Get the spline point data at a particular point index.
+	FPursuitPointData& GetPursuitPoint(int32 index) const
+	{ auto& pointData = GetPursuitPointData(); return pointData[index]; }
+
+	// Get the extended spline point data at a particular point index.
+	FPursuitPointExtendedData& GetPursuitPointExtended(int32 index) const
+	{ auto& pointData = GetPursuitPointExtendedData(); return pointData[index]; }
+
+	// Clear all of the links along this spline.
+	void ClearSplineLinks()
+	{ SplineLinks.Empty(); }
+
+	// Add a spline link to this spline component.
+	void AddSplineLink(const FSplineLink& link);
+
+	// Calculate the extended point data by examining the scene around the spline.
+	void Build(bool fromMenu, bool performChecks, bool bareData, TArray<FVector>* intersectionPoints = nullptr);
+
+	// Is this spline a dead-start where it can't be joined except when spawning a vehicle?
+	bool DeadStart = false;
+
+	// Is this spline a dead-end when spline following reselection at end is mandatory?
+	bool DeadEnd = false;
+
+	// The links to other splines along this spline.
+	TArray<FSplineLink> SplineLinks;
+
+	// The route choices that are available at various distances along this spline.
+	TArray<FRouteChoice> RouteChoices;
+
+	// The pursuit spline mesh components used to visualize this pursuit spline component.
+	TArray<TWeakObjectPtr<UPursuitSplineMeshComponent>> PursuitSplineMeshComponents;
+
+	// Helper function when using the Editor.
+	virtual TStructOnScope<FActorComponentInstanceData> GetComponentInstanceData() const override;
+
+	// Helper function when using the Editor.
+	void ApplyComponentInstanceData(FPursuitSplineInstanceData* SplineInstanceData, bool bPostUCS);
+
+protected:
+
+	// Destroy the component.
+	virtual void DestroyComponent(bool bPromoteChildren = false) override
+	{ SplineLinks.Empty(); Super::DestroyComponent(bPromoteChildren); }
+
+	// Calculate the sections of the spline.
+	virtual void CalculateSections() override;
+
+private:
+
+	// Bind a point index key to fall within the spline.
+	int32 BindKey(int32 key) const
+	{ auto& pointData = GetPursuitPointData(); return (IsClosedLoop()
+		? ((key < 0) ? pointData.Num() + key : ((key >= pointData.Num()) ? key % pointData.Num() : key))
+		: FMath::Clamp(key, 0, pointData.Num() - 1)); }
+
+	// Find the "this" point index key that falls within the spline.
+	int32 ThisKey(float key, int32 direction = 1) const
+	{ return BindKey((direction >= 0) ? FMath::FloorToInt(key) : FMath::CeilToInt(key)); }
+
+	// Find the "next" point index key that falls within the spline.
+	int32 NextKey(float key, int32 direction = 1) const
+	{ return ThisKey(key, direction * -1); }
+
+	// Bind an extended point index key to fall within the spline.
+	int32 BindExtendedKey(TArray<FPursuitPointExtendedData>& pointData, int32 key) const
+	{ return (IsClosedLoop()
+		? ((key < 0) ? pointData.Num() + key : ((key >= pointData.Num()) ? key % pointData.Num() : key))
+		: FMath::Clamp(key, 0, pointData.Num() - 1)); }
+
+	// Find the "this" extended point index key that falls within the spline.
+	int32 ThisExtendedKey(TArray<FPursuitPointExtendedData>& pointData, float key, int32 direction = 1) const
+	{ return BindExtendedKey(pointData, (direction >= 0) ? FMath::FloorToInt(key) : FMath::CeilToInt(key)); }
+
+	// Find the "next" extended point index key that falls within the spline.
+	int32 NextExtendedKey(TArray<FPursuitPointExtendedData>& pointData, float key, int32 direction = 1) const
+	{ return ThisExtendedKey(pointData, key, direction * -1); }
+
+	// Get the extended point keys bounding a distance along the spline.
+	void GetExtendedPointKeys(float distance, int32& key0, int32& key1, float& ratio) const;
+
+	// The class that the master distances were found for this spline.
+	int32 MasterDistanceClass = 0;
+
+	// The parent actor for this spline.
+	APursuitSplineActor* PursuitSplineParent = nullptr;
+
+	// The point data, referenced from the parent actor.
+	TArray<FPursuitPointData>& GetPursuitPointData() const;
+
+	// The extended point data, referenced from the parent actor.
+	TArray<FPursuitPointExtendedData>& GetPursuitPointExtendedData() const;
+
+#pragma endregion NavigationSplines
+
 };
 
 /**

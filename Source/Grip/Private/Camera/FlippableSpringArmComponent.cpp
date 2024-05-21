@@ -178,7 +178,11 @@ void UFlippableSpringArmComponent::UpdateDesiredArmProperties(const FTransform& 
 		float headingAngleDifference = FVector::DotProduct(vehicleDirection, TargetVehicleHeading);
 		float forwardSpeedKPH = speedKPH * FMath::Max(0.0f, FVector::DotProduct(TargetVehicleHeading, vehicleVelocityDirection));
 
-		bool useCrashCamera = false;
+#pragma region NavigationSplines
+
+		bool useCrashCamera = (gameState->IsGameModeRace() && vehicle->GetAI().RouteFollower.IsValid() == true && gameState->GeneralOptions.UseCrashCamera == true);
+
+#pragma endregion NavigationSplines
 
 		// Determine mode at this moment.
 

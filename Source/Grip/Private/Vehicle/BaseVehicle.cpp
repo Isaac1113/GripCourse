@@ -2178,6 +2178,84 @@ void ABaseVehicle::UpdateSteering(float deltaSeconds, const FVector& xdirection,
 
 	float steeringPosition = Control.SteeringPosition;
 
+#pragma region NavigationSplines
+
+#pragma region VehiclePhysicsTweaks
+
+#if GRIP_VEHICLE_AUTO_TUNNEL_STEERING
+
+	bool autoSteered = false;
+
+	if (AI.BotDriver == false &&
+		FMath::Abs(steeringPosition) < GRIP_STEERING_ACTIVE &&
+		GRIP_POINTER_VALID(GetAI().RouteFollower.ThisSpline) == true)
+	{
+		int32 direction = GetPursuitSplineDirection();
+		float tunnelDiameter = GetAI().RouteFollower.GetTunnelDiameterOverDistance(GetAI().RouteFollower.ThisDistance, FMath::Max(GetSpeedMPS() * 0.25f, 10.0f) * 100.0f, direction, false) / 100.0f;
+
+		if (tunnelDiameter > 0.0f &&
+			tunnelDiameter < 15.0f)
+		{
+			FVector splineDirection = GetAI().RouteFollower.ThisSpline->GetDirectionAtDistanceAlongSpline(GetAI().RouteFollower.ThisDistance, ESplineCoordinateSpace::World);
+			float steeringScale = SteeringModel->FrontWheelsMaxSteeringAngle * rf;
+			float angleOffset = 90.0f - FMathEx::DotProductToDegrees(FVector::DotProduct(ydirection, splineDirection * direction));
+
+			if (FMath::Abs(angleOffset) > 5.0f)
+			{
+				angleOffset += -5.0f * FMathEx::UnitSign(angleOffset);
+
+				steeringPosition = FMath::Clamp(angleOffset / steeringScale, -1.0f, 1.0f);
+				steeringPosition = FMathEx::NegativePow(steeringPosition, 1.5f);
+				steeringPosition *= 0.5f;
+
+				if (IsFlipped() == true)
+				{
+					// Flip the steering if the vehicle is flipped.
+
+					steeringPosition *= -1.0f;
+				}
+
+				if (FMath::Abs(steeringPosition) < GRIP_STEERING_ACTIVE)
+				{
+					steeringPosition = Control.SteeringPosition;
+				}
+
+				if (tunnelDiameter > 12.0f)
+				{
+					steeringScale = 1.0f - ((tunnelDiameter - 12.0f) / 3.0f);
+				}
+				else
+				{
+					steeringScale = 1.0f;
+				}
+
+				if (steeringScale > KINDA_SMALL_NUMBER)
+				{
+					steeringScale = FMath::Lerp(0.0f, steeringScale, FMathEx::GetRatio(speed, 25.0f, 50.0f));
+				}
+
+				float ratio = FMathEx::GetSmoothingRatio(0.5f, deltaSeconds);
+
+				Control.AutoSteeringPosition = Control.AutoSteeringPosition * ratio + steeringPosition * (1.0f - ratio);
+
+				steeringPosition = FMath::Lerp(Control.SteeringPosition, Control.AutoSteeringPosition, steeringScale);
+
+				autoSteered = true;
+			}
+		}
+	}
+
+	if (autoSteered == false)
+	{
+		Control.AutoSteeringPosition = Control.SteeringPosition;
+	}
+
+#endif // GRIP_VEHICLE_AUTO_TUNNEL_STEERING
+
+#pragma endregion VehiclePhysicsTweaks
+
+#pragma endregion NavigationSplines
+
 	float mfb = SteeringModel->FrontWheelsMaxSteeringAngle;
 	float mbb = SteeringModel->BackWheelsMaxSteeringAngle;
 
@@ -3899,6 +3977,14 @@ void ABaseVehicle::CompletePostSpawn()
 
 			if (mainSpline != nullptr)
 			{
+
+#pragma region NavigationSplines
+
+				RaceState.DistanceAlongMasterRacingSpline = mainSpline->GetNearestDistance(GetActorLocation(), 0.0f, 0.0f, 10, PlayGameMode->MasterRacingSplineLength / (50.0f * 100.0f));
+				RaceState.LastDistanceAlongMasterRacingSpline = RaceState.GroundedDistanceAlongMasterRacingSpline = RaceState.DistanceAlongMasterRacingSpline;
+
+#pragma endregion NavigationSplines
+
 				if (PlayGameMode->MasterRacingSplineStartDistance != 0.0f &&
 					PlayGameMode->UnknownPlayerStart == false)
 				{
@@ -3923,6 +4009,21 @@ void ABaseVehicle::CompletePostSpawn()
 
 FVector ABaseVehicle::GetTargetHeading() const
 {
+
+#pragma region NavigationSplines
+
+	if (GRIP_POINTER_VALID(AI.RouteFollower.ThisSpline) == true)
+	{
+		FVector v0 = AI.RouteFollower.ThisSpline->GetDirectionAtDistanceAlongSpline(AI.RouteFollower.ThisDistance, ESplineCoordinateSpace::World);
+		FVector v1 = AI.RouteFollower.NextSpline->GetDirectionAtDistanceAlongSpline(AI.RouteFollower.NextDistance, ESplineCoordinateSpace::World);
+		FVector v2 = FMath::Lerp(v0, v1, 0.5f); v2.Normalize();
+
+		return v2;
+	}
+	else
+
+#pragma endregion NavigationSplines
+
 	{
 		return GetFacingDirection();
 	}

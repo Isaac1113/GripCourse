@@ -316,6 +316,14 @@ public:
 
 	// The angular rate at which the roll velocity requires damping when under AI bot control.
 	const float RollVelocityRequiresDamping = 20.0f;
+
+#pragma region NavigationSplines
+
+	// The follower used to navigate a route.
+	FRouteFollower RouteFollower;
+
+#pragma endregion NavigationSplines
+
 };
 
 /**

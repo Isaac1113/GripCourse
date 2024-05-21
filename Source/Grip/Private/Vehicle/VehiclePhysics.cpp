@@ -1830,6 +1830,30 @@ int32 ABaseVehicle::UpdateContactSensors(float deltaSeconds, const FTransform& t
 
 				scale = FMath::Lerp(0.0f, scale, FMathEx::GetRatio(surfaceNormal.Z, -1.0f, 1.0f));
 
+#pragma region NavigationSplines
+
+				if (Antigravity == false)
+				{
+					if (AI.RouteFollower.ThisSpline != nullptr &&
+						AI.RouteFollower.NextSpline != nullptr)
+					{
+						// Reduce the bounce the more sideways the vehicle is compared to the direction of the track.
+
+						FVector splineDirection0 = AI.RouteFollower.ThisSpline->GetDirectionAtDistanceAlongSpline(AI.RouteFollower.ThisDistance, ESplineCoordinateSpace::World);
+						FVector splineDirection1 = AI.RouteFollower.NextSpline->GetDirectionAtDistanceAlongSpline(AI.RouteFollower.NextDistance, ESplineCoordinateSpace::World);
+
+						splineDirection0 = transform.InverseTransformVector(splineDirection0);
+						splineDirection1 = transform.InverseTransformVector(splineDirection1);
+
+						float difference = FMath::Max(FMath::Atan2(splineDirection0.Y, splineDirection0.X), FMath::Atan2(splineDirection1.Y, splineDirection1.X));
+						float angleRatio = FMathEx::GetRatio(FMath::Abs(FMath::RadiansToDegrees(difference)), 10.0f, 30.0f);
+
+						scale *= 1.0f - angleRatio;
+					}
+				}
+
+#pragma endregion NavigationSplines
+
 				scale = FMath::Min(scale, AntigravityBounceScale);
 
 				if (scale > KINDA_SMALL_NUMBER)

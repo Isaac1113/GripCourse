@@ -1592,6 +1592,20 @@ private:
 
 #pragma endregion VehicleAudio
 
+#pragma region NavigationSplines
+
+public:
+
+	// Get the direction of the vehicle compared to its pursuit spline.
+	int32 GetPursuitSplineDirection() const;
+
+private:
+
+	// The route follower to use when resurrecting the vehicle.
+	FRouteFollower ResurrectionRouteFollower;
+
+#pragma endregion NavigationSplines
+
 #pragma region PickupsAvailable
 
 public:

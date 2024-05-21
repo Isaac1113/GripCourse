@@ -54,3 +54,23 @@ bool ABaseVehicle::AIVehicleGoodForLaunch(float probability, float minimumSpeedK
 {
 	return false;
 }
+
+#pragma region NavigationSplines
+
+/**
+* Get the direction of the vehicle compared to its pursuit spline.
+***********************************************************************************/
+
+int32 ABaseVehicle::GetPursuitSplineDirection() const
+{
+	if (GRIP_POINTER_VALID(AI.RouteFollower.ThisSpline) == false)
+	{
+		return 0;
+	}
+	else
+	{
+		return AI.RouteFollower.ThisSpline->GetRelativeDirectionAtDistanceAlongSpline(AI.RouteFollower.ThisDistance, GetFacingDirection());
+	}
+}
+
+#pragma endregion NavigationSplines
