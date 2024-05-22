@@ -1606,6 +1606,46 @@ private:
 
 #pragma endregion NavigationSplines
 
+#pragma region AINavigation
+
+private:
+
+	// Perform the AI for a vehicle.
+	void UpdateAI(float deltaSeconds);
+
+	// Reset the spline weaving to sync with the current relative vehicle position to the spline.
+	void AIResetSplineWeaving()
+	{ AI.ResetPursuitSplineWidthOffset = true; }
+
+	// Reset the spline following so that it starts over.
+	void AIResetSplineFollowing(bool beginPlay, bool allowDeadEnds = true, bool keepCurrentSpline = false, bool retainLapPosition = true, float minMatchingDistance = 0.0f);
+
+	// Follow the current spline, and switch over to the next if necessary.
+	void AIFollowSpline(const FVector& location, const FVector& wasHeadingTo, const FVector& movement, float movementSize, float deltaSeconds, int32 numIterations = 5, float accuracy = 1.0f);
+
+	// Switch splines if the current one looks suspect.
+	bool AICheckSplineValidity(const FVector& location, float checkCycle, bool testOnly);
+
+	// Determine where to aim on the spline, switching splines at branches if necessary.
+	// The vehicle itself will follow on a little later, as the aim point is always ahead of the vehicle.
+	void AIDetermineSplineAimPoint(float ahead, float movementSize);
+
+	// Update an offset from the center line of the current aiming spline that makes the
+	// car weaves around a little on the track rather than appearing robotic.
+	void AIUpdateSplineWeaving(const FVector& location);
+
+	// Has this vehicle gone off-track somehow?
+	bool IsVehicleOffTrack(bool extendedChecks);
+
+	// Should the vehicle stay on this spline because it's being cinematically watched on it right now?
+	bool StayOnThisSpline() const
+	{ return (NumSplineWatchers > 0); }
+
+	// Query parameters for a ray cast.
+	FCollisionQueryParams QueryParams = FCollisionQueryParams(TEXT("VehicleSensor"), true, this);
+
+#pragma endregion AINavigation
+
 #pragma region PickupsAvailable
 
 public:

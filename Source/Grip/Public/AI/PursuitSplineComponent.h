@@ -297,6 +297,53 @@ public:
 
 	// The distance on the next spline that switching transfers to.
 	float NextSwitchDistance = 0.0f;
+
+#pragma region AINavigation
+
+	// Estimate where we are along the current spline, faster than DetermineThis.
+	void EstimateThis(const FVector& position, const FVector& movement, float movementSize, int32 numIterations, float accuracy);
+
+	// Determine where we are along the current spline.
+	void DetermineThis(const FVector& position, float movementSize, int32 numIterations, float accuracy);
+
+	// Determine where we are aiming for along the current or next spline, switching splines at branches if necessary.
+	void DetermineNext(float ahead, float movementSize, UPursuitSplineComponent* preferSpline, bool forMissile, bool wantPickups, bool highOptimumSpeed, float fastPathways);
+
+	// Check that a connection from one spline to another has been taken.
+	bool CheckBranchConnection(UWorld* world, const FVector& position, float atDistance);
+
+	// Choose the next spline to hook onto from the route choice given. Use the parameters specified to determine which is the best spline to select for the use-case given.
+	bool ChooseNextSpline(TWeakObjectPtr<UPursuitSplineComponent>& pursuitSpline, float distanceAlong, float& thisSwitchDistance, float& nextSwitchDistance, const FRouteChoice& choice, float movementSize, UPursuitSplineComponent* preferSpline, bool forMissile, bool wantPickups, bool highOptimumSpeed, float fastPathways) const;
+
+	// Switch to a new spline if we've passed the switch distance for it.
+	void SwitchSplineAtJunction(const FVector& position, float movementSize, int32 numIterations, float accuracy);
+
+	// Get the minimum optimum speed of the spline in kph over distance.
+	float GetMinimumOptimumSpeedOverDistance(float distance, float& overDistance, int32 direction) const;
+
+	// Get the minimum speed of the spline in kph over distance.
+	float GetMinimumSpeedOverDistance(float distance, float& overDistance, int32 direction) const;
+
+	// The spline that the follower was last on before the current one.
+	TWeakObjectPtr<UPursuitSplineComponent> LastSpline;
+
+	// The distance along the last spline that the follower was on.
+	float LastDistance = 0.0f;
+
+	// The distance on this spline to switch to the next spline.
+	float ThisSwitchDistance = 0.0f;
+
+	// Are we switching splines right now?
+	bool SwitchingSpline = false;
+
+	// The location at which the parent actor of the route follower switched splines.
+	FVector SwitchLocation = FVector::ZeroVector;
+
+	// The distance along this spline that the route switch decision was last made, or -1.0 if inactive.
+	float DecidedDistance = -1.0f;
+
+#pragma endregion AINavigation
+
 };
 
 #pragma endregion NavigationSplines
@@ -487,6 +534,66 @@ private:
 	TArray<FPursuitPointExtendedData>& GetPursuitPointExtendedData() const;
 
 #pragma endregion NavigationSplines
+
+#pragma region AINavigation
+
+public:
+
+	// Find the nearest distance along a spline to a given master distance.
+	// The fewer iterations and samples you use the faster it will be, but also the less
+	// accurate it will be. Conversely, the smaller the difference between startDistance
+	// and endDistance the more accurate the result will be.
+	float GetNearestDistanceToMasterDistance(float masterDistance, float startDistance = 0.0f, float endDistance = 0.0f, int32 numIterations = 4, int32 numSamples = 50, float earlyExitDistance = 10.0f) const;
+
+	// Get the quaternion in world space at a distance along a spline.
+	FQuat GetWorldSpaceQuaternionAtDistanceAlongSpline(float distance) const;
+
+	// Get the up vector in world space at a distance along a spline.
+	FVector GetWorldSpaceUpVectorAtDistanceAlongSpline(float distance) const;
+
+	// Get the minimum optimum speed of the spline in kph over distance.
+	float GetMinimumOptimumSpeedOverDistance(float distance, float& overDistance, int32 direction) const;
+
+	// Get the minimum speed of the spline in kph over distance.
+	float GetMinimumSpeedOverDistance(float distance, float& overDistance, int32 direction) const;
+
+	// Is a distance and location along a spline within the open space around the spline?
+	// (this is an inaccurate but cheap test)
+	bool IsWorldLocationWithinRange(float distance, FVector location) const;
+
+	// Get the maneuvering width at a distance along a spline.
+	float GetWidthAtDistanceAlongSpline(float distance) const;
+
+	// Get the minimum speed in kph at a distance along a spline.
+	float GetMinimumSpeedAtDistanceAlongSpline(float distance) const;
+
+	// Get the optimum speed in kph at a distance along a spline.
+	float GetOptimumSpeedAtDistanceAlongSpline(float distance) const;
+
+	// How much open space is the around a world location for a given spline offset and clearance angle?
+	// In order for this to be useful, location should lie somewhere within the arc around splineOffset and range clearanceAngle.
+	// splineOffset should always be in spline space.
+	float GetClearance(float distance, FVector location, FVector splineOffset, float clearanceAngle, bool splineSpace, float padding) const;
+
+	// Get all the clearances at a distance along the spline.
+	TArray<float> GetClearances(float distance) const;
+
+	// Is this spline about to merge with the given spline at the given distance?
+	bool IsAboutToMergeWith(UPursuitSplineComponent* pursuitSpline, float distanceAlong);
+
+	// Is this spline connected to a child spline?
+	bool IsSplineConnected(UPursuitSplineComponent* child, float& atDistance, float& childDistance);
+
+	// Get the careful driving at a distance along a spline.
+	bool GetCarefulDrivingAtDistanceAlongSpline(float distance) const;
+
+	// Get the world closest position for a distance along the spline.
+	FVector GetWorldClosestPosition(float distance, bool raw = false) const;
+
+	// Get the world closest offset for a distance along the spline.
+	FVector GetWorldClosestOffset(float distance, bool raw = false) const;
+
+#pragma endregion AINavigation
 
 };
 

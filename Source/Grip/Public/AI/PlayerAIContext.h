@@ -324,6 +324,20 @@ public:
 
 #pragma endregion NavigationSplines
 
+#pragma region AINavigation
+
+	// Update the variables used for spline weaving and speed variation.
+	void UpdateSplineFollowing(float deltaSeconds, float speedKPH);
+
+	// Get the distance from the spline that the vehicle is currently driving.
+	float GetSplineWeavingOffset(bool includeTransition) const
+	{ return FMath::Sin(PursuitSplineWidthTime) * SmoothedPursuitSplineWidthOffset; }
+
+	// Is this bot driver driving casually, and not in a tight driving situation?
+	bool IsDrivingCasually(bool ignoreVehicles = false) const;
+
+#pragma endregion AINavigation
+
 };
 
 /**

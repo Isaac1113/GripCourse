@@ -425,4 +425,158 @@ bool APursuitSplineActor::Build(bool fromMenu)
 	return true;
 }
 
+#pragma region AINavigation
+
+/**
+* Find the nearest pursuit spline to a world space location.
+*
+* If you opt to matchMasterDistanceAlong then you need to provide that distance
+* in distanceAlong.
+***********************************************************************************/
+
+bool APursuitSplineActor::FindNearestPursuitSpline(const FVector& location, const FVector& direction, UWorld* world, TWeakObjectPtr<UPursuitSplineComponent>& pursuitSpline, float& distanceAway, float& distanceAlong, EPursuitSplineType type, bool visibleOnly, bool matchMasterDistanceAlong, bool allowDeadStarts, bool allowDeadEnds, float minMatchingDistance)
+{
+	APlayGameMode* gameMode = APlayGameMode::Get(world);
+
+	if (gameMode == nullptr)
+	{
+		return false;
+	}
+
+	UPursuitSplineComponent* masterSpline = gameMode->MasterRacingSpline.Get();
+	float masterSplineLength = gameMode->MasterRacingSplineLength;
+	float masterDistance = distanceAlong;
+
+	if (masterSpline == nullptr)
+	{
+		matchMasterDistanceAlong = false;
+	}
+
+	distanceAway = -1.0f;
+	pursuitSpline.Reset();
+
+	TArray<FSplineDistance2> sortedSplines;
+
+	for (APursuitSplineActor* splineActor : gameMode->GetPursuitSplines())
+	{
+		TArray<UActorComponent*> splines;
+
+		splineActor->GetComponents(UPursuitSplineComponent::StaticClass(), splines);
+
+		for (UActorComponent* component : splines)
+		{
+			UPursuitSplineComponent* splineComponent = Cast<UPursuitSplineComponent>(component);
+
+			if ((allowDeadStarts == true || splineComponent->DeadStart == false) &&
+				(allowDeadEnds == true || splineComponent->DeadEnd == false))
+			{
+				if (splineComponent->Enabled == true &&
+					splineComponent->Type == type &&
+					splineComponent->GetNumberOfSplinePoints() > 1)
+				{
+					float distance = 0.0f;
+					float maxMatchingDistance = 250.0f * 100.0f;
+
+					if (masterSpline == splineComponent &&
+						matchMasterDistanceAlong == true)
+					{
+						// This is the master spline and we're looking to match a master distance
+						// so we can focus our search to a small area.
+
+						distance = splineComponent->GetNearestDistance(location, masterDistance - maxMatchingDistance * 2.0f, masterDistance + maxMatchingDistance * 2.0f);
+					}
+					else if (matchMasterDistanceAlong == true)
+					{
+						distance = splineComponent->GetNearestDistanceToMasterDistance(masterDistance);
+					}
+					else
+					{
+						distance = splineComponent->GetNearestDistance(location);
+					}
+
+					FVector difference = location - splineComponent->GetWorldLocationAtDistanceAlongSpline(distance);
+
+					if (matchMasterDistanceAlong == true)
+					{
+						float thisMasterDistance = splineComponent->GetMasterDistanceAtDistanceAlongSpline(distance, masterSplineLength);
+						float distanceDifference = masterSpline->GetDistanceDifference(masterDistance, thisMasterDistance);
+						float maxDistance = FMath::Max(minMatchingDistance, maxMatchingDistance);
+
+						if (distanceDifference > maxDistance)
+						{
+							continue;
+						}
+					}
+
+					sortedSplines.Emplace(FSplineDistance2(splineComponent, difference.Size(), distance));
+				}
+			}
+		}
+	}
+
+	FCollisionQueryParams queryParams(TEXT("SplineEnvironmentSensor"), false, nullptr);
+
+	sortedSplines.Sort([](const FSplineDistance2& object1, const FSplineDistance2& object2)
+		{
+			return object1.DistanceAway < object2.DistanceAway;
+		});
+
+	while (true)
+	{
+		FHitResult hit;
+
+		for (FSplineDistance2& sortedSpline : sortedSplines)
+		{
+			float sortedLength = sortedSpline.Spline->GetSplineLength();
+			FVector splineLocation = sortedSpline.Spline->GetWorldLocationAtDistanceAlongSpline(sortedSpline.DistanceAlong);
+
+			if (visibleOnly == false ||
+				sortedSpline.Spline->IsWorldLocationWithinRange(sortedSpline.DistanceAlong, location) == true ||
+				world->LineTraceSingleByChannel(hit, location, splineLocation, ABaseGameMode::ECC_LineOfSightTest, queryParams) == false)
+			{
+				// Return this spline to the caller as it now meets our conditions.
+
+				pursuitSpline = sortedSpline.Spline;
+				distanceAlong = sortedSpline.DistanceAlong;
+				distanceAway = sortedSpline.DistanceAway;
+
+				return visibleOnly;
+			}
+		}
+
+		if (visibleOnly == true)
+		{
+			// Fallback to invisible splines if possible.
+
+			visibleOnly = false;
+		}
+		else
+		{
+			// Otherwise we already did the invisible splines so break out.
+
+			break;
+		}
+	}
+
+	// If we couldn't find a suitable spline that you were close to then simply use the master
+	// spline itself.
+
+	if (masterSpline != nullptr)
+	{
+		UE_LOG(GripLogPursuitSplines, Warning, TEXT("Couldn't find a good spline in FindNearestPursuitSpline so just returning the master racing spline instead"));
+
+		FVector splineLocation = masterSpline->GetWorldLocationAtDistanceAlongSpline(masterDistance);
+		FVector difference = location - splineLocation;
+
+		distanceAway = difference.Size();
+
+		pursuitSpline = masterSpline;
+		distanceAlong = masterDistance;
+	}
+
+	return visibleOnly;
+}
+
+#pragma endregion AINavigation
+
 #pragma endregion NavigationSplines

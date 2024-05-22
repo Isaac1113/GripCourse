@@ -981,4 +981,1291 @@ TArray<FPursuitPointExtendedData>& UPursuitSplineComponent::GetPursuitPointExten
 	return PursuitSplineParent->PointExtendedData;
 }
 
+#pragma region AINavigation
+
+/**
+* Console variable for testing all track branches equally randomly.
+***********************************************************************************/
+
+#if WITH_EDITOR
+TAutoConsoleVariable<int32> CVarTestTrackBranches(
+	TEXT("grip.TestTrackBranches"),
+	0,
+	TEXT("Test the track branches.\n")
+	TEXT("  0: Off\n")
+	TEXT("  1: On\n"),
+	ECVF_Default);
+#endif
+
+/**
+* Weight a probability of a spline based on desirability.
+***********************************************************************************/
+
+static float WeightProbability(UPursuitSplineComponent* spline, float pickupWeighting, float shortcutWeighting)
+{
+	float probability = spline->BranchProbability;
+	float result = probability;
+
+	if (spline->IsShortcut == true)
+	{
+		result += probability * shortcutWeighting;
+	}
+
+	if (spline->ContainsPickups == true)
+	{
+		result += probability * pickupWeighting;
+	}
+
+	return result;
+}
+
+/**
+* Check that a connection from one spline to another has been taken.
+***********************************************************************************/
+
+bool FRouteFollower::CheckBranchConnection(UWorld* world, const FVector& position, float atDistance)
+{
+	bool result = false;
+
+	if (SwitchingSpline == true &&
+		(position - SwitchLocation).Size() > atDistance)
+	{
+		float accuracy = 1.0f;
+		int32 numIterations = 5;
+
+		float t0 = LastDistance - atDistance;
+		float t1 = LastDistance + atDistance;
+
+		float d = LastSpline->GetNearestDistance(position, t0, t1, numIterations, LastSpline->GetNumSamplesForRange(t1 - t0, numIterations, accuracy));
+		FVector pl = LastSpline->GetWorldLocationAtDistanceAlongSpline(d);
+		FVector pt = ThisSpline->GetWorldLocationAtDistanceAlongSpline(ThisDistance);
+
+		float dl = (position - pl).Size();
+		float dt = (position - pt).Size();
+
+		if (dl > dt)
+		{
+			// Looks like we're closer to the spline we were aiming for, excellent!
+		}
+		else
+		{
+			bool tooFarAway = dt > (ThisSpline->GetWidthAtDistanceAlongSpline(ThisDistance) * 100.0f);
+
+			if (tooFarAway == true)
+			{
+				result = true;
+			}
+		}
+
+		SwitchingSpline = false;
+	}
+
+	return result;
+}
+
+/**
+* Estimate where we are along the current spline, faster than DetermineThis.
+*
+* This will drift out of sync fairly quickly though, so call DetermineThis on
+* a regular basis to correct the drift.
+***********************************************************************************/
+
+void FRouteFollower::EstimateThis(const FVector& position, const FVector& movement, float movementSize, int32 numIterations, float accuracy)
+{
+	if (GRIP_POINTER_VALID(ThisSpline) == true)
+	{
+		FVector splineDirection = ThisSpline->GetWorldSpaceQuaternionAtDistanceAlongSpline(ThisDistance).GetAxisX();
+		FVector direction = movement; direction.Normalize();
+
+		// We don't use movementSize here as it can be different to movement.Size(), and we need the latter.
+
+		float splineMovement = movement.Size() * FVector::DotProduct(splineDirection, direction);
+
+		ThisDistance = ThisSpline->ClampDistance(ThisDistance + splineMovement);
+
+		SwitchSplineAtJunction(position, movementSize, numIterations, accuracy);
+	}
+}
+
+/**
+* Determine where we are along the current spline.
+***********************************************************************************/
+
+void FRouteFollower::DetermineThis(const FVector& position, float movementSize, int32 numIterations, float accuracy)
+{
+	if (GRIP_POINTER_VALID(ThisSpline) == true)
+	{
+		// Do some intelligent nearest point detection that optimizes the number of
+		// samples taken to achieve that.
+
+		float t0 = ThisDistance - (movementSize * GRIP_SPLINE_MOVEMENT_MULTIPLIER);
+		float t1 = ThisDistance + (movementSize * GRIP_SPLINE_MOVEMENT_MULTIPLIER);
+
+		ThisDistance = ThisSpline->GetNearestDistance(position, t0, t1, numIterations, ThisSpline->GetNumSamplesForRange(t1 - t0, numIterations, accuracy));
+
+		SwitchSplineAtJunction(position, movementSize, numIterations, accuracy);
+	}
+}
+
+/**
+* Determine where we are aiming for along the current or next spline, switching
+* splines at branches if necessary.
+***********************************************************************************/
+
+void FRouteFollower::DetermineNext(float ahead, float movementSize, UPursuitSplineComponent* preferSpline, bool forMissile, bool wantPickups, bool highOptimumSpeed, float fastPathways)
+{
+#if WITH_EDITOR
+	if (CVarTestTrackBranches->GetInt() != 0)
+	{
+		fastPathways = 0.0f;
+		highOptimumSpeed = false;
+	}
+#endif // WITH_EDITOR
+
+	if (GRIP_POINTER_VALID(ThisSpline) == true)
+	{
+		float lastDistance = NextDistance;
+
+		if (ThisSpline == NextSpline)
+		{
+			NextDistance = NextSpline->ClampDistance(ThisDistance + ahead);
+
+			if (lastDistance > 1.0f &&
+				lastDistance == NextDistance)
+			{
+				lastDistance -= 1.0f;
+			}
+
+			// Scan the decision points on this spline to see if we've just crossed one.
+
+			for (FRouteChoice& choice : NextSpline->RouteChoices)
+			{
+				if ((lastDistance != 0.0f) &&
+					(FMath::Abs(lastDistance - NextDistance) < 50.0f * 100.0f) &&
+					((lastDistance < NextDistance && lastDistance < choice.DecisionDistance && NextDistance >= choice.DecisionDistance) || (lastDistance >= NextDistance && NextDistance < choice.DecisionDistance && lastDistance >= choice.DecisionDistance)))
+				{
+					if (DecidedDistance != choice.DecisionDistance)
+					{
+						// We've just come into the window of having to make a spline choice here.
+
+						ThisSwitchDistance = 0.0f;
+
+						float thisSwitchDistance = 0.0f;
+						float nextSwitchDistance = 0.0f;
+						float distanceAlong = NextSpline->ClampDistance(NextDistance);
+
+						ChooseNextSpline(NextSpline, distanceAlong, thisSwitchDistance, nextSwitchDistance, choice, movementSize, preferSpline, forMissile, wantPickups, highOptimumSpeed, fastPathways);
+
+						DecidedDistance = choice.DecisionDistance;
+
+						if (ThisSpline != NextSpline)
+						{
+							// We switched spline, so use the new distance along the new spline.
+
+							ThisSwitchDistance = thisSwitchDistance;
+							NextSwitchDistance = nextSwitchDistance;
+						}
+					}
+
+					break;
+				}
+			}
+		}
+
+		if (ThisSpline != NextSpline)
+		{
+			NextDistance = ThisDistance + ahead;
+
+			// See if NextSpline is still valid for where we currently are - we could have
+			// started to go backwards or the ahead value might have reduced since NextSpline
+			// was originally set.
+
+			// #TODO: This seems to be misfiring on occasion.
+
+			if (DecidedDistance >= 0.0f &&
+				lastDistance < DecidedDistance &&
+				NextDistance < DecidedDistance)
+			{
+				DecidedDistance = -1.0f;
+				ThisSwitchDistance = 0.0f;
+				NextSpline = ThisSpline;
+			}
+			else
+			{
+				// Recalculate the distance into the aiming spline. It's already different
+				// to the current spline so we don't look for a new one here.
+
+				if (NextDistance > ThisSwitchDistance)
+				{
+					NextDistance -= ThisSwitchDistance;
+					NextDistance += NextSwitchDistance;
+				}
+			}
+		}
+	}
+}
+
+/**
+* Choose the next spline to hook onto from the route choice given. Use the
+* parameters specified to determine which is the best spline to select for the
+* use-case given.
+***********************************************************************************/
+
+bool FRouteFollower::ChooseNextSpline(TWeakObjectPtr<UPursuitSplineComponent>& pursuitSpline, float distanceAlong, float& thisSwitchDistance, float& nextSwitchDistance, const FRouteChoice& choice, float movementSize, UPursuitSplineComponent* preferSpline, bool forMissile, bool wantPickups, bool highOptimumSpeed, float fastPathways) const
+{
+	if (choice.SplineLinks.Num() > 0)
+	{
+		bool foundPreferred = false;
+		float totalProbability = 0.0f;
+		float pickupWeighting = (wantPickups == true) ? 1.0f : 0.5f;
+		float shortcutWeighting = FMath::Clamp(fastPathways * 2.0f, -1.0f, 2.0f);
+		FSplineLink useSpline = FSplineLink(pursuitSpline, distanceAlong, distanceAlong);
+		bool addPursuitSpline = true;
+		TArray<FSplineLink> connectedSplines;
+
+		for (const FSplineLink& link : choice.SplineLinks)
+		{
+			const TWeakObjectPtr<UPursuitSplineComponent>& spline = link.Spline;
+
+			if (spline->Enabled == true)
+			{
+				if ((forMissile == false && link.Spline->Type == EPursuitSplineType::General) ||
+					(forMissile == true && (link.Spline->Type == EPursuitSplineType::MissileAssistance || (link.Spline->Type == EPursuitSplineType::General && link.Spline->SuitableForMissileGuidance == true))))
+				{
+					// OK, so this spline is suitable for what we want to use it for.
+
+					useSpline = link;
+
+					connectedSplines.Emplace(link);
+					totalProbability += WeightProbability(spline.Get(), pickupWeighting, shortcutWeighting);
+
+					if (spline == pursuitSpline)
+					{
+						addPursuitSpline = false;
+					}
+
+					if (spline->AlwaysSelect == true)
+					{
+						if (forMissile == false ||
+							spline->SuitableForMissileGuidance == true)
+						{
+							// The spline is set to always select for vehicles so indicate that we've found
+							// the preferred spline.
+
+							foundPreferred = true;
+							break;
+						}
+					}
+				}
+			}
+		}
+
+		if (foundPreferred == false)
+		{
+			// If we've still a way to go on the current spline then also add this as
+			// a choice for the next spline.
+
+			if (pursuitSpline->IsClosedLoop() == true ||
+				distanceAlong < pursuitSpline->GetSplineLength() - (100.0f * 100.0f))
+			{
+				if (addPursuitSpline == true)
+				{
+					connectedSplines.Emplace(FSplineLink(pursuitSpline, distanceAlong, distanceAlong));
+					totalProbability += WeightProbability(pursuitSpline.Get(), pickupWeighting, shortcutWeighting);
+				}
+			}
+
+			if (foundPreferred == false &&
+				forMissile == true)
+			{
+				// If we're tracking a missile then prefer to use specific missile splines as
+				// they're designed to keep missiles out of trouble.
+
+				for (FSplineLink& link : connectedSplines)
+				{
+					if (link.Spline->Type == EPursuitSplineType::MissileAssistance)
+					{
+						useSpline = link;
+						foundPreferred = true;
+						break;
+					}
+				}
+			}
+
+			if (foundPreferred == false &&
+				preferSpline != nullptr)
+			{
+				// Look for the preferred spline that we've been passed in this branch.
+				// For missiles, this is the spline the target vehicle is on.
+
+				for (FSplineLink& link : connectedSplines)
+				{
+					if (preferSpline == link.Spline)
+					{
+						useSpline = link;
+						foundPreferred = true;
+						break;
+					}
+				}
+
+				if (foundPreferred == false)
+				{
+					// Look for the preferred spline that we've been passed in all the branches
+					// of the directly connected splines.
+
+					for (FSplineLink& link : connectedSplines)
+					{
+						for (FSplineLink& nextSpline : link.Spline->SplineLinks)
+						{
+							if (preferSpline == nextSpline.Spline)
+							{
+								useSpline = link;
+								foundPreferred = true;
+								break;
+							}
+						}
+
+						if (foundPreferred == true)
+						{
+							break;
+						}
+					}
+				}
+			}
+
+			if (foundPreferred == false &&
+				forMissile == true)
+			{
+				// If we're tracking a missile then prefer to use closed loops (the main track)
+				// as opposed to side branches.
+
+				for (FSplineLink& link : connectedSplines)
+				{
+					if (link.Spline->IsClosedLoop() == true)
+					{
+						useSpline = link;
+						foundPreferred = true;
+						break;
+					}
+				}
+			}
+
+			if (foundPreferred == false &&
+				highOptimumSpeed == true)
+			{
+				// Look for the spline with the highest optimum speed as we've like got a vehicle
+				// here with a turbo boost currently in use.
+
+				float maxOptimumSpeed = 0.0f;
+				float minOptimumSpeed = 1000.0f;
+				float avgOptimumSpeed = 0.0f;
+
+				for (FSplineLink& link : connectedSplines)
+				{
+					float overDistance = 500.0f * 100.0f;
+					float optimumSpeed = link.Spline->GetMinimumOptimumSpeedOverDistance(link.NextDistance, overDistance, 1);
+
+					optimumSpeed = (optimumSpeed == 0.0f) ? 1000.0f : optimumSpeed;
+					minOptimumSpeed = FMath::Min(minOptimumSpeed, optimumSpeed);
+					avgOptimumSpeed += optimumSpeed;
+				}
+
+				avgOptimumSpeed /= connectedSplines.Num();
+
+				for (FSplineLink& link : connectedSplines)
+				{
+					float overDistance = 500.0f * 100.0f;
+					float optimumSpeed = link.Spline->GetMinimumOptimumSpeedOverDistance(link.NextDistance, overDistance, 1);
+
+					optimumSpeed = (optimumSpeed == 0.0f) ? 1000.0f : optimumSpeed;
+
+					if ((maxOptimumSpeed < optimumSpeed) &&
+						(optimumSpeed > avgOptimumSpeed + 50.0f || optimumSpeed > minOptimumSpeed + 100.0f))
+					{
+						useSpline = link;
+						maxOptimumSpeed = optimumSpeed;
+						foundPreferred = true;
+					}
+				}
+			}
+
+			if (foundPreferred == false)
+			{
+				// Right, OK, just look for the spline using the weighting system as it is normally
+				// designed to do.
+
+				float amount = 0.0f;
+				float probability = FMath::FRand() * totalProbability;
+
+				for (FSplineLink& link : connectedSplines)
+				{
+					amount += WeightProbability(link.Spline.Get(), pickupWeighting, shortcutWeighting);
+
+					if (probability <= amount)
+					{
+						useSpline = link;
+						foundPreferred = true;
+						break;
+					}
+				}
+			}
+		}
+
+		if (foundPreferred == false &&
+			connectedSplines.Num() > 0)
+		{
+			useSpline = connectedSplines[connectedSplines.Num() - 1];
+		}
+
+		pursuitSpline = useSpline.Spline;
+		thisSwitchDistance = useSpline.ThisDistance;
+		nextSwitchDistance = useSpline.NextDistance;
+
+		return true;
+	}
+	else
+	{
+		return false;
+	}
+}
+
+/**
+* Switch to a new spline if we've passed the switch distance for it.
+***********************************************************************************/
+
+void FRouteFollower::SwitchSplineAtJunction(const FVector& position, float movementSize, int32 numIterations, float accuracy)
+{
+	// So now we know where we are, determine if a new pursuit spline is necessary.
+	// We will have identified this already because we aim ahead of where the car
+	// actually is, so it's just a question of swapping over.
+
+	if (ThisSwitchDistance != 0.0f &&
+		ThisDistance >= ThisSwitchDistance)
+	{
+		if (ThisSpline != NextSpline)
+		{
+			for (FSplineLink& link : ThisSpline->SplineLinks)
+			{
+				if (link.Spline == NextSpline &&
+					link.ThisDistance == ThisSwitchDistance &&
+					link.NextDistance == NextSwitchDistance)
+				{
+					SwitchingSpline = true;
+
+					LastSpline = ThisSpline;
+					LastDistance = ThisDistance;
+					SwitchLocation = position;
+
+					float t0 = link.NextDistance;
+					float t1 = link.NextDistance + (movementSize * GRIP_SPLINE_MOVEMENT_MULTIPLIER);
+
+					ThisSpline = NextSpline;
+					ThisDistance = ThisSpline->GetNearestDistance(position, t0, t1, numIterations, ThisSpline->GetNumSamplesForRange(t1 - t0, numIterations, accuracy));
+					DecidedDistance = -1.0f;
+
+					break;
+				}
+			}
+		}
+
+		ThisSwitchDistance = 0.0f;
+	}
+}
+
+/**
+* Is this spline about to merge with the given spline at the given distance?
+***********************************************************************************/
+
+bool UPursuitSplineComponent::IsAboutToMergeWith(UPursuitSplineComponent* pursuitSpline, float distanceAlong)
+{
+	// Scan the decision points on this spline to see if we've just crossed one.
+
+	for (FRouteChoice& choice : RouteChoices)
+	{
+		if (distanceAlong >= choice.DecisionDistance - 50.0f * 100.0f &&
+			distanceAlong <= choice.DecisionDistance)
+		{
+			for (FSplineLink& link : choice.SplineLinks)
+			{
+				if (link.Spline == pursuitSpline &&
+					link.ForwardLink == true)
+				{
+					return true;
+				}
+			}
+		}
+	}
+
+	return false;
+}
+
+/**
+* Is this spline connected to a child spline?
+***********************************************************************************/
+
+bool UPursuitSplineComponent::IsSplineConnected(UPursuitSplineComponent* child, float& atDistance, float& childDistance)
+{
+	for (FSplineLink& link : SplineLinks)
+	{
+		if (link.Spline == child &&
+			link.ForwardLink == true)
+		{
+			atDistance = link.ThisDistance;
+			childDistance = link.NextDistance;
+
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/**
+* Get the careful driving at a distance along a spline.
+***********************************************************************************/
+
+bool UPursuitSplineComponent::GetCarefulDrivingAtDistanceAlongSpline(float distance) const
+{
+	if (CarefulDriving == true)
+	{
+		return true;
+	}
+
+	if (PursuitSplineParent->PointExtendedData.Num() < 2)
+	{
+		return false;
+	}
+
+	int32 thisKey = 0;
+	int32 nextKey = 0;
+	float ratio = 0.0f;
+
+	GetExtendedPointKeys(distance, thisKey, nextKey, ratio);
+
+	FPursuitPointExtendedData& p0 = PursuitSplineParent->PointExtendedData[thisKey];
+	FPursuitPointExtendedData& p1 = PursuitSplineParent->PointExtendedData[nextKey];
+
+	bool v0 = p0.OpenLeft || p0.OpenRight;
+	bool v1 = p1.OpenLeft || p1.OpenRight;
+
+	return v0 || v1;
+}
+
+/**
+* Get the maneuvering width at a distance along a spline.
+***********************************************************************************/
+
+float UPursuitSplineComponent::GetWidthAtDistanceAlongSpline(float distance) const
+{
+	float key = SplineCurves.ReparamTable.Eval(distance, 0.0f);
+	int32 thisKey = ThisKey(key);
+	int32 nextKey = NextKey(key);
+
+	float v0 = PursuitSplineParent->PointData[thisKey].ManeuveringWidth;
+	float v1 = PursuitSplineParent->PointData[nextKey].ManeuveringWidth;
+
+	return FMath::Lerp(v0, v1, key - thisKey);
+}
+
+/**
+* Is a distance and location along a spline within the open space around the spline?
+* (this is an inaccurate but cheap test)
+***********************************************************************************/
+
+bool UPursuitSplineComponent::IsWorldLocationWithinRange(float distance, FVector location) const
+{
+	// Get the distance at which the nearest extended point to this location is found on the spline.
+
+	location = WorldSpaceToSplineSpace(location, distance, true);
+	location.X = 0.0f;
+
+	FVector splineOffset = location;
+
+	if (splineOffset.Normalize() == false)
+	{
+		splineOffset = FVector(0.0f, 0.0f, 1.0f);
+	}
+
+	return (GetClearance(distance, location, splineOffset, 45.0f, true, 250.0f) > 1.0f);
+}
+
+/**
+* Get the distance between a 2D point and a line.
+***********************************************************************************/
+
+static float PointLineDistance(const FVector2D& point, const FVector2D& origin, FVector2D direction)
+{
+	// Calculate the scalar for the nearest point on the line to the point that we
+	// are comparing.
+
+	FVector2D difference = point - origin;
+	float lengthSqr = direction.SizeSquared();
+
+	if (lengthSqr > KINDA_SMALL_NUMBER)
+	{
+		float pointOnLine = FVector2D::DotProduct(direction, difference) / lengthSqr;
+
+		if (pointOnLine > 0.0f)
+		{
+			if (pointOnLine < 1.0f)
+			{
+				// Get the nearest point on the line to the point that we are comparing and
+				// return the distance between them.
+
+				direction *= pointOnLine;
+			}
+
+			difference -= direction;
+		}
+	}
+
+	return difference.Size();
+}
+
+/**
+* Do two 2D line segments intersect one another, and if so, where?
+***********************************************************************************/
+
+static bool LineSegmentIntersection(const FVector2D& p0, const FVector2D& p1, const FVector2D& p2, const FVector2D& p3, FVector2D& intersection, bool considerCollinearOverlapAsIntersect = false)
+{
+	FVector2D r = p1 - p0;
+	FVector2D s = p3 - p2;
+	float rxs = FVector2D::CrossProduct(r, s);
+	float qpxr = FVector2D::CrossProduct(p2 - p0, r);
+
+	// If r x s = 0 and (p2 - p0) x r = 0, then the two lines are collinear.
+
+	if (rxs == 0 && qpxr == 0)
+	{
+		// 1. If either  0 <= (p2 - p0) * r <= r * r or 0 <= (p0 - p2) * s <= * s
+		// then the two lines are overlapping,
+
+		if (considerCollinearOverlapAsIntersect == true)
+		{
+			if ((0 <= FVector2D::DotProduct(p2 - p0, r) && FVector2D::DotProduct(p2 - p0, r) <= FVector2D::DotProduct(r, r)) ||
+				(0 <= FVector2D::DotProduct(p0 - p2, s) && FVector2D::DotProduct(p0 - p2, s) <= FVector2D::DotProduct(s, s)))
+			{
+				return true;
+			}
+		}
+
+		// 2. If neither 0 <= (p2 - p0) * r = r * r nor 0 <= (p0 - p2) * s <= s * s
+		// then the two lines are collinear but disjoint.
+		// No need to implement this expression, as it follows from the expression above.
+
+		return false;
+	}
+
+	// 3. If r x s = 0 and (p2 - p0) x r != 0, then the two lines are parallel and non-intersecting.
+
+	if (rxs == 0 && qpxr != 0)
+	{
+		return false;
+	}
+
+	// t = (p2 - p0) x s / (r x s)
+
+	float t = FVector2D::CrossProduct(p2 - p0, s) / rxs;
+
+	// u = (p2 - p0) x r / (r x s)
+
+	float u = FVector2D::CrossProduct(p2 - p0, r) / rxs;
+
+	// 4. If r x s != 0 and 0 <= t <= 1 and 0 <= u <= 1
+	// the two line segments meet at the point p0 + t r = p2 + u s.
+
+	if (rxs != 0 && (0 <= t && t <= 1) && (0 <= u && u <= 1))
+	{
+		// We can calculate the intersection point using either t or u.
+
+		intersection = p0 + (t * r);
+
+		// An intersection was found.
+
+		return true;
+	}
+
+	// 5. Otherwise, the two line segments are not parallel but do not intersect.
+
+	return false;
+}
+
+/**
+* How much open space is the around a world location for a given spline offset
+* and clearance angle?
+*
+* In order for this to be useful, location should lie somewhere within the arc
+* around splineOffset and range clearanceAngle.
+*
+* splineOffset should always be in spline space.
+***********************************************************************************/
+
+float UPursuitSplineComponent::GetClearance(float distance, FVector location, FVector splineOffset, float clearanceAngle, bool splineSpace, float padding) const
+{
+	ensure(clearanceAngle <= 180.0f);
+
+	clearanceAngle = FMath::Min(clearanceAngle, 180.0f);
+
+	TArray<FPursuitPointExtendedData>& pursuitPointExtendedData = PursuitSplineParent->PointExtendedData;
+
+	if (pursuitPointExtendedData.Num() < 2)
+	{
+		return 0.0f;
+	}
+
+	if (splineSpace == false)
+	{
+		location = WorldSpaceToSplineSpace(location, distance, true);
+	}
+
+	FVector2D localOffset = FVector2D(location.Y, location.Z);
+
+	// The angle in radians of the offset we've been given compared to the spline's center.
+
+	float radians = FMath::Atan2(splineOffset.Y, splineOffset.Z);
+
+	if (radians < 0.0f)
+	{
+		radians = PI * 2.0f + radians;
+	}
+
+	// Convert the angle in radians to an index number in our lookup table.
+
+	float center = (radians / (PI * 2.0f)) * FPursuitPointExtendedData::NumDistances;
+	int32 centerInt = FMath::RoundToInt(center);
+
+	// Convert the clearance angle in degrees to an index number in our lookup table.
+
+	int32 numIndices = 1;
+
+	if (clearanceAngle > KINDA_SMALL_NUMBER)
+	{
+		numIndices = FMath::CeilToInt((clearanceAngle / 360.0f) * FPursuitPointExtendedData::NumDistances) & ~1;
+		numIndices = FMath::Max(numIndices, 2);
+		numIndices |= 1;
+	}
+
+	int32 thisKey = 0;
+	int32 nextKey = 0;
+	float ratio = 0.0f;
+
+	GetExtendedPointKeys(distance, thisKey, nextKey, ratio);
+
+	FPursuitPointExtendedData& p0 = pursuitPointExtendedData[thisKey];
+	FPursuitPointExtendedData& p1 = pursuitPointExtendedData[nextKey];
+
+	float distances[FPursuitPointExtendedData::NumDistances];
+
+	static bool sinCosComputed = false;
+	static float angles[FPursuitPointExtendedData::NumDistances];
+	static FVector2D sinCos[FPursuitPointExtendedData::NumDistances];
+
+	for (int32 i = 0; i < FPursuitPointExtendedData::NumDistances; i++)
+	{
+		float d0 = p0.EnvironmentDistances[i];
+		float d1 = p1.EnvironmentDistances[i];
+		float d2 = UnlimitedSplineDistance;
+
+		if (d0 >= 0.0f &&
+			d1 >= 0.0f)
+		{
+			d2 = FMath::Lerp(d0, d1, ratio);
+		}
+		else if (d0 >= 0.0f)
+		{
+			d2 = d0;
+		}
+		else if (d1 >= 0.0f)
+		{
+			d2 = d1;
+		}
+
+		distances[i] = d2 + padding;
+
+		if (sinCosComputed == false)
+		{
+			angles[i] = ((float)i / (float)FPursuitPointExtendedData::NumDistances) * PI * 2.0f;
+
+			FMath::SinCos(&sinCos[i].X, &sinCos[i].Y, angles[i]);
+		}
+	}
+
+	sinCosComputed = true;
+
+	// Do a line segment intersection test with a line from the location to somewhere known for sure
+	// to be outside of the spline area, against all the lines that form the edges of the spline area.
+
+	int32 numIntersections = 0;
+	int32 distancesMask = FPursuitPointExtendedData::NumDistances - 1;
+	FVector2D outside = FVector2D(UnlimitedSplineDistance * 1.1f, 0.0f);
+	FVector2D lastIntersection = FVector2D::ZeroVector;
+	FVector2D intersection = lastIntersection;
+
+	for (int32 i = 0; i < FPursuitPointExtendedData::NumDistances; i++)
+	{
+		int32 i1 = (i + 1) & distancesMask;
+		FVector2D o0 = sinCos[i] * distances[i];
+		FVector2D o1 = sinCos[i1] * distances[i1];
+
+		if (LineSegmentIntersection(localOffset, outside, o0, o1, intersection) == true)
+		{
+			if (lastIntersection.Equals(intersection, 1.0f) == false)
+			{
+				numIntersections++;
+			}
+
+			lastIntersection = intersection;
+		}
+	}
+
+	// The number of line intersections from the tests we've just done indicate whether the location
+	// is inside or outside of the spline area. If we have an odd number of intersections then we're
+	// inside of the area, and outside for an even number.
+
+	if ((numIntersections & 1) == 1)
+	{
+		// The location is inside.
+
+		// Default to a kilometer clearance.
+
+		float minDistance = UnlimitedSplineDistance;
+
+		for (int32 i = 0; i < numIndices - 1; i++)
+		{
+			int32 i0 = ((centerInt - (numIndices >> 1)) + i);
+
+			i0 = (i0 < 0) ? FPursuitPointExtendedData::NumDistances + i0 : i0 & distancesMask;
+
+			int32 i1 = (i0 + 1) & distancesMask;
+
+			FVector2D o0 = sinCos[i0] * distances[i0];
+			FVector2D o1 = sinCos[i1] * distances[i1];
+
+			minDistance = FMath::Min(minDistance, PointLineDistance(localOffset, o0, o1 - o0));
+		}
+
+		return minDistance;
+	}
+	else
+	{
+		// The location is outside.
+
+		return 0.0f;
+	}
+}
+
+/**
+* Is a distance along a spline in open space?
+***********************************************************************************/
+
+TArray<float> UPursuitSplineComponent::GetClearances(float distance) const
+{
+	TArray<float> result;
+
+	if (PursuitSplineParent->PointExtendedData.Num() < 2)
+	{
+		return result;
+	}
+
+	int32 thisKey = 0;
+	int32 nextKey = 0;
+	float ratio = 0.0f;
+
+	GetExtendedPointKeys(distance, thisKey, nextKey, ratio);
+
+	FPursuitPointExtendedData& p0 = PursuitSplineParent->PointExtendedData[thisKey];
+	FPursuitPointExtendedData& p1 = PursuitSplineParent->PointExtendedData[nextKey];
+
+	for (int32 i = 0; i < FPursuitPointExtendedData::NumDistances; i++)
+	{
+		int32 index = i;
+		float d0 = p0.EnvironmentDistances[index];
+		float d1 = p1.EnvironmentDistances[index];
+		float d2 = -1.0f;
+
+		if (d0 >= 0.0f && d1 >= 0.0f)
+		{
+			d2 = FMath::Lerp(d0, d1, ratio);
+		}
+		else if (d0 >= 0.0f)
+		{
+			d2 = d0;
+		}
+		else if (d1 >= 0.0f)
+		{
+			d2 = d1;
+		}
+
+		result.Emplace(d2);
+	}
+
+	return result;
+}
+
+/**
+* Get the minimum optimum speed of the route in kph over distance.
+***********************************************************************************/
+
+float FRouteFollower::GetMinimumOptimumSpeedOverDistance(float distance, float& overDistance, int32 direction) const
+{
+	float m0 = 1000.0f;
+	float m1 = 1000.0f;
+
+	if (GRIP_POINTER_VALID(ThisSpline) == true)
+	{
+		m0 = m1 = ThisSpline->GetMinimumOptimumSpeedOverDistance(distance, overDistance, direction);
+	}
+
+	if (GRIP_POINTER_VALID(NextSpline) == true &&
+		NextSpline != ThisSpline)
+	{
+		m1 = NextSpline->GetMinimumOptimumSpeedOverDistance(NextSwitchDistance, overDistance, direction);
+	}
+
+	return FMath::Min(m0, m1);
+}
+
+/**
+* Get the minimum optimum speed of the spline in kph over distance.
+***********************************************************************************/
+
+float UPursuitSplineComponent::GetMinimumOptimumSpeedOverDistance(float distance, float& overDistance, int32 direction) const
+{
+	float minimumSpeed = 1000.0f;
+	float length = GetSplineLength();
+	float endDistance = distance + (overDistance * direction);
+
+	if (IsClosedLoop() == false)
+	{
+		endDistance = ClampDistanceAgainstLength(endDistance, length);
+		overDistance -= FMath::Abs(endDistance - distance);
+	}
+	else
+	{
+		overDistance = 0.0f;
+	}
+
+	float iterationDistance = FMathEx::MetersToCentimeters(ExtendedPointMeters);
+	int32 numIterations = FMath::CeilToInt(FMath::Abs(endDistance - distance) / iterationDistance);
+
+	for (int32 i = 0; i <= numIterations; i++)
+	{
+		float optimumSpeed = GetOptimumSpeedAtDistanceAlongSpline(distance);
+
+		if (optimumSpeed > 0.0f)
+		{
+			minimumSpeed = FMath::Min(minimumSpeed, optimumSpeed);
+		}
+
+		distance = ClampDistanceAgainstLength(distance + (iterationDistance * direction), length);
+	}
+
+	return minimumSpeed;
+}
+
+/**
+* Get the minimum speed of the route in kph over distance.
+***********************************************************************************/
+
+float FRouteFollower::GetMinimumSpeedOverDistance(float distance, float& overDistance, int32 direction) const
+{
+	float m0 = 0.0f;
+	float m1 = 0.0f;
+
+	if (GRIP_POINTER_VALID(ThisSpline) == true)
+	{
+		m0 = m1 = ThisSpline->GetMinimumSpeedOverDistance(distance, overDistance, direction);
+	}
+
+	if (GRIP_POINTER_VALID(NextSpline) == true &&
+		NextSpline != ThisSpline)
+	{
+		m1 = NextSpline->GetMinimumSpeedOverDistance(NextSwitchDistance, overDistance, direction);
+	}
+
+	return FMath::Max(m0, m1);
+}
+
+/**
+* Get the optimum speed in kph at a distance along a spline.
+***********************************************************************************/
+
+float UPursuitSplineComponent::GetOptimumSpeedAtDistanceAlongSpline(float distance) const
+{
+	float key = SplineCurves.ReparamTable.Eval(distance, 0.0f);
+	int32 thisKey = ThisKey(key);
+	int32 nextKey = NextKey(key);
+
+	float v0 = FMath::Min(PursuitSplineParent->PointData[thisKey].OptimumSpeed, 1000.0f);
+	float v1 = FMath::Min(PursuitSplineParent->PointData[nextKey].OptimumSpeed, 1000.0f);
+
+	if (v0 == 0.0f &&
+		v1 == 0.0f)
+	{
+		return 0.0f;
+	}
+
+	if (v0 == 0.0f)
+	{
+		v0 = 1000.0f;
+	}
+
+	if (v1 == 0.0f)
+	{
+		v1 = 1000.0f;
+	}
+
+	return FMath::Lerp(v0, v1, key - thisKey);
+}
+
+/**
+* Get the minimum speed of the spline in kph over distance.
+***********************************************************************************/
+
+float UPursuitSplineComponent::GetMinimumSpeedOverDistance(float distance, float& overDistance, int32 direction) const
+{
+	float minimumSpeed = 0.0f;
+	float length = GetSplineLength();
+	float endDistance = distance + (overDistance * direction);
+
+	if (IsClosedLoop() == false)
+	{
+		endDistance = ClampDistanceAgainstLength(endDistance, length);
+		overDistance -= FMath::Abs(endDistance - distance);
+		overDistance = FMath::Max(0.0f, overDistance);
+	}
+	else
+	{
+		overDistance = 0.0f;
+	}
+
+	float iterationDistance = FMathEx::MetersToCentimeters(ExtendedPointMeters);
+	int32 numIterations = FMath::CeilToInt(FMath::Abs(endDistance - distance) / iterationDistance);
+
+	for (int32 i = 0; i <= numIterations; i++)
+	{
+		float optimumSpeed = GetMinimumSpeedAtDistanceAlongSpline(distance);
+
+		if (optimumSpeed > KINDA_SMALL_NUMBER)
+		{
+			if (minimumSpeed == 0.0f)
+			{
+				minimumSpeed = optimumSpeed;
+			}
+			else
+			{
+				minimumSpeed = FMath::Max(minimumSpeed, optimumSpeed);
+			}
+		}
+
+		distance = ClampDistanceAgainstLength(distance + (iterationDistance * direction), length);
+	}
+
+	return minimumSpeed;
+}
+
+/**
+* Get the minimum speed in kph at a distance along a spline.
+***********************************************************************************/
+
+float UPursuitSplineComponent::GetMinimumSpeedAtDistanceAlongSpline(float distance) const
+{
+	float key = SplineCurves.ReparamTable.Eval(distance, 0.0f);
+	int32 thisKey = ThisKey(key);
+	int32 nextKey = NextKey(key);
+
+	float v0 = PursuitSplineParent->PointData[thisKey].MinimumSpeed;
+	float v1 = PursuitSplineParent->PointData[nextKey].MinimumSpeed;
+
+	return FMath::Lerp(v0, v1, key - thisKey);
+}
+
+/**
+* Get the world closest position for a distance along the spline.
+***********************************************************************************/
+
+FVector UPursuitSplineComponent::GetWorldClosestPosition(float distance, bool raw) const
+{
+	return GetWorldLocationAtDistanceAlongSpline(distance) + GetWorldClosestOffset(distance, raw);
+}
+
+/**
+* Get the world closest offset for a distance along the spline.
+***********************************************************************************/
+
+FVector UPursuitSplineComponent::GetWorldClosestOffset(float distance, bool raw) const
+{
+	if (PursuitSplineParent->PointExtendedData.Num() < 2)
+	{
+		return FVector::ZeroVector;
+	}
+
+	int32 thisKey = 0;
+	int32 nextKey = 0;
+	float ratio = 0.0f;
+
+	GetExtendedPointKeys(distance, thisKey, nextKey, ratio);
+
+	FPursuitPointExtendedData& p0 = PursuitSplineParent->PointExtendedData[thisKey];
+	FPursuitPointExtendedData& p1 = PursuitSplineParent->PointExtendedData[nextKey];
+
+	FVector d0 = (raw == true) ? p0.RawGroundOffset : p0.UseGroundOffset;
+	FVector d1 = (raw == true) ? p1.RawGroundOffset : p1.UseGroundOffset;
+
+	FVector d2 = FVector::ZeroVector;
+
+	if (d0.IsZero() == false && d1.IsZero() == false)
+	{
+		// We need some intelligence here to nicely interpolate spherically between angles when
+		// they're reasonably close together, and not when they're far apart. The reason being
+		// we don't want to circle around when there has been no surface in between the
+		// surfaces of the two adjacent data points.
+
+		d2 = FMath::Lerp(d0, d1, ratio);
+
+		if (FVector::DotProduct(d0, d1) >= 0.0f)
+		{
+			d2.Normalize();
+			d2 *= FMath::Lerp(d0.Size(), d1.Size(), ratio);
+		}
+	}
+	else if (d0.IsZero() == false)
+	{
+		d2 = d0;
+	}
+	else if (d1.IsZero() == false)
+	{
+		d2 = d1;
+	}
+
+	return d2;
+}
+
+/**
+* Find the nearest distance along a spline to a given master distance.
+*
+* The fewer iterations and samples you use the faster it will be, but also the less
+* accurate it will be. Conversely, the smaller the difference between startDistance
+* and endDistance the more accurate the result will be.
+***********************************************************************************/
+
+float UPursuitSplineComponent::GetNearestDistanceToMasterDistance(float masterDistance, float startDistance, float endDistance, int32 numIterations, int32 numSamples, float earlyExitDistance) const
+{
+	float splineLength = GetSplineLength();
+
+	if (endDistance <= 0.0f)
+	{
+		endDistance = splineLength;
+	}
+
+	if (numIterations <= 0)
+	{
+		numIterations = 5;
+	}
+
+	float resultDistance = startDistance;
+	APlayGameMode* gameMode = APlayGameMode::Get(this);
+	float masterSplineLength = gameMode->MasterRacingSplineLength;
+	UPursuitSplineComponent* masterSpline = gameMode->MasterRacingSpline.Get();
+
+	if (masterSpline != nullptr)
+	{
+		float minDistance = startDistance;
+		float maxDistance = endDistance;
+		float minSeparation = -1.0f;
+		float invNumSamples = 1.0f / (float)numSamples;
+
+		for (int32 iteration = 0; iteration < numIterations; iteration++)
+		{
+			float distanceAlong = minDistance;
+			float deltaStep = (maxDistance - minDistance) * invNumSamples;
+			float lastResultDistance = resultDistance;
+
+			// This will sample between minDistance and maxDistance inclusively.
+
+			for (int32 sample = 0; sample <= numSamples; sample++)
+			{
+				// Determine the master distance on the spline for distanceAlong.
+
+				float clampedDistanceAlong = ClampDistanceAgainstLength(distanceAlong, splineLength);
+				float testDistance = GetMasterDistanceAtDistanceAlongSpline(clampedDistanceAlong, masterSplineLength);
+				float separation = masterSpline->GetDistanceDifference(masterDistance, testDistance);
+
+				if (minSeparation == -1.0f ||
+					minSeparation > separation)
+				{
+					// If the minimum separation was less than the last then record it.
+
+					minSeparation = separation;
+					resultDistance = clampedDistanceAlong;
+				}
+
+				distanceAlong += deltaStep;
+			}
+
+			if (iteration > 0 &&
+				deltaStep < earlyExitDistance * 2.0f &&
+				GetDistanceDifference(resultDistance, lastResultDistance) < earlyExitDistance)
+			{
+				// Early break if the last refinement only took us less than a set distance away from the last.
+
+				break;
+			}
+
+			minDistance = resultDistance - deltaStep;
+			maxDistance = resultDistance + deltaStep;
+		}
+	}
+
+	return resultDistance;
+}
+
+/**
+* Get the quaternion in world space at a distance along a spline.
+***********************************************************************************/
+
+FQuat UPursuitSplineComponent::GetWorldSpaceQuaternionAtDistanceAlongSpline(float distance) const
+{
+	if (PursuitSplineParent->PointExtendedData.Num() < 2)
+	{
+		return FQuat::Identity;
+	}
+
+	int32 key0 = 0;
+	int32 key1 = 0;
+	float ratio = 0.0f;
+
+	GetExtendedPointKeys(distance, key0, key1, ratio);
+
+	TArray<FPursuitPointExtendedData>& pursuitPointExtendedData = PursuitSplineParent->PointExtendedData;
+
+	return FQuat::Slerp(pursuitPointExtendedData[key0].Quaternion, pursuitPointExtendedData[key1].Quaternion, ratio);
+}
+
+/**
+* Get the up vector in world space at a distance along a spline.
+***********************************************************************************/
+
+FVector UPursuitSplineComponent::GetWorldSpaceUpVectorAtDistanceAlongSpline(float distance) const
+{
+	if (PursuitSplineParent->PointExtendedData.Num() < 2)
+	{
+		return FVector::UpVector;
+	}
+
+	int32 key0 = 0;
+	int32 key1 = 0;
+	float ratio = 0.0f;
+
+	GetExtendedPointKeys(distance, key0, key1, ratio);
+
+	TArray<FPursuitPointExtendedData>& pursuitPointExtendedData = PursuitSplineParent->PointExtendedData;
+
+	FQuat quaternion = FQuat::Slerp(pursuitPointExtendedData[key0].Quaternion, pursuitPointExtendedData[key1].Quaternion, ratio);
+
+	return quaternion.GetAxisZ();
+}
+
+#pragma endregion AINavigation
+
 #pragma endregion NavigationSplines

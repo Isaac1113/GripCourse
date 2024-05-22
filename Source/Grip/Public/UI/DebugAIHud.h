@@ -25,4 +25,12 @@ class ADebugAIHUD : public ADebugHUD
 	GENERATED_BODY()
 
 public:
+
+#pragma region AINavigation
+
+	// Draw the HUD.
+	virtual void DrawHUD() override;
+
+#pragma endregion AINavigation
+
 };

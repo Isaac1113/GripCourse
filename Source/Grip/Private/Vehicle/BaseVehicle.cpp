@@ -282,6 +282,13 @@ void ABaseVehicle::PostInitializeComponents()
 
 	// Initial hookup, the absolute nearest point will do.
 
+#pragma region AINavigation
+
+	AIResetSplineFollowing(true, true, false, false);
+	AIUpdateSplineWeaving(AI.LastLocation);
+
+#pragma endregion AINavigation
+
 	int32 numWheels = WheelAssignments.Num();
 
 	if (numWheels != 0)
@@ -593,6 +600,12 @@ void ABaseVehicle::Tick(float deltaSeconds)
 	{
 		SetAIDriver(true);
 	}
+
+#pragma region AINavigation
+
+	UpdateAI(deltaSeconds);
+
+#pragma endregion AINavigation
 
 #pragma region VehicleControls
 
@@ -3773,6 +3786,15 @@ void ABaseVehicle::SetAIDriver(bool aiDriver, bool setVehicle, bool setInputMapp
 
 		if (AI.BotDriver == true)
 		{
+
+#pragma region AINavigation
+
+			// Find nearest to current lap distance.
+
+			AIResetSplineFollowing(true);
+
+#pragma endregion AINavigation
+
 		}
 		else
 		{
@@ -3841,7 +3863,28 @@ void ABaseVehicle::CycleCameraPoint()
 
 bool ABaseVehicle::ShouldTurnLeft() const
 {
+
+#pragma region AINavigation
+
+	if (GRIP_POINTER_VALID(AI.RouteFollower.ThisSpline) == true)
+	{
+		FVector tdirection = AI.RouteFollower.ThisSpline->GetDirectionAtDistanceAlongSpline(AI.RouteFollower.ThisDistance, ESplineCoordinateSpace::World);
+		FVector xdirection = GetTransform().GetUnitAxis(EAxis::X);
+		FVector ydirection = GetTransform().GetUnitAxis(EAxis::Y);
+
+		float dotx = FVector::DotProduct(tdirection, xdirection);
+		float doty = FVector::DotProduct(tdirection, ydirection);
+
+		if (dotx < 1.0f - 0.3f)
+		{
+			return ((Wheels.SoftFlipped == true) ? doty > 0.0f : doty < 0.0f);
+		}
+	}
+
 	return false;
+
+#pragma endregion AINavigation
+
 }
 
 /**
@@ -3850,7 +3893,28 @@ bool ABaseVehicle::ShouldTurnLeft() const
 
 bool ABaseVehicle::ShouldTurnRight() const
 {
+
+#pragma region AINavigation
+
+	if (GRIP_POINTER_VALID(AI.RouteFollower.ThisSpline) == true)
+	{
+		FVector tdirection = AI.RouteFollower.ThisSpline->GetDirectionAtDistanceAlongSpline(AI.RouteFollower.ThisDistance, ESplineCoordinateSpace::World);
+		FVector xdirection = GetTransform().GetUnitAxis(EAxis::X);
+		FVector ydirection = GetTransform().GetUnitAxis(EAxis::Y);
+
+		float dotx = FVector::DotProduct(tdirection, xdirection);
+		float doty = FVector::DotProduct(tdirection, ydirection);
+
+		if (dotx < 1.0f - 0.3f)
+		{
+			return ((Wheels.SoftFlipped == true) ? doty < 0.0f : doty > 0.0f);
+		}
+	}
+
 	return false;
+
+#pragma endregion AINavigation
+
 }
 
 /**

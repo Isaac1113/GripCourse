@@ -74,6 +74,14 @@ public:
 	// Calculate the extended point data by examining the scene around the spline.
 	bool Build(bool fromMenu);
 
+#pragma region AINavigation
+
+	// Find the nearest spline for a point in world space.
+	// If you opt to matchMasterDistanceAlong then you need to provide that distance in distanceAlong.
+	static bool FindNearestPursuitSpline(const FVector& location, const FVector& direction, UWorld* world, TWeakObjectPtr<UPursuitSplineComponent>& pursuitSpline, float& distanceAway, float& distanceAlong, EPursuitSplineType type, bool visibleOnly, bool matchMasterDistanceAlong, bool allowDeadStarts, bool allowDeadEnds, float minMatchingDistance = 0.0f);
+
+#pragma endregion AINavigation
+
 	// Distance between which we should consider spline links part of the same junction for route switching.
 	static const float MinDistanceForSplineLinksSquared;
 
