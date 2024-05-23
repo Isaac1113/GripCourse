@@ -1646,6 +1646,57 @@ private:
 
 #pragma endregion AINavigation
 
+#pragma region AIVehicleControl
+
+private:
+
+	// Update the driving mode of the vehicle, this is the main driving coordination center.
+	void AIUpdateDrivingMode(const FVector& movementPerSecond, const FVector& direction, const FVector& heading);
+
+	// Determine if the vehicle is still in normal control and switch driving mode if not.
+	void AIUpdateGeneralManeuvering(const FVector& movementPerSecond, const FVector& direction, const FVector& heading);
+
+	// Determine if the vehicle has recovered control and switch to a new driving mode if so.
+	void AIUpdateRecoveringControl(const FVector& direction, const FVector& heading);
+
+	// Determine if the vehicle has reoriented correctly and switch to a new driving mode if so.
+	void AIUpdateReversingToReorient(const FVector& movementPerSecond, const FVector& direction, const FVector& heading);
+
+	// Determine if the vehicle has reversed away from a blockage and switch to a new driving mode if so.
+	void AIUpdateReversingFromBlockage(const FVector& movementPerSecond);
+
+	// Determine if the vehicle has launched to the correct direction and switch to a new driving mode if so.
+	void AIUpdateLaunchToReorient(const FVector& direction, const FVector& heading);
+
+	// Update the J turn maneuver and determine if the vehicle has reoriented to the correct direction and switch to a new driving mode if so.
+	void AIUpdateJTurnToReorient(const FVector& direction, const FVector& heading);
+
+	// Manage drifting around long, sweeping corners.
+	void AIUpdateDrifting(const FVector& location, const FVector& direction);
+
+	// Is the vehicle stuck and should we reverse direction to try to get out of it.
+	bool AIAreWeStuck(const FVector& movementPerSecond, bool reversing);
+
+	// Do we lost control?
+	void AIHaveWeLostControl(const FVector& direction, const FVector& heading);
+
+	// Given all the current state, update the control inputs to the vehicle to achieve the desired goals.
+	void AICalculateControlInputs(const FTransform& transform, const FVector& location, const FVector& direction, const FVector& movementPerSecond, float deltaSeconds);
+
+	//Calculate the throttle required, reverse if necessary, to achieve the desired speed. Target speed is in centimeters per second.
+	float AICalculateThrottleForSpeed(const FVector& xdirection, float targetSpeed);
+
+	// Is movement of the vehicle possible or is it stuck unable to move in the desired direction?
+	bool AIMovementPossible() const;
+
+	// Record vehicle progress, backwards and forwards, throttle settings and other data that we can use later in AI bot decision making.
+	void AIRecordVehicleProgress(const FTransform& transform, const FVector& movement, const FVector& direction, float deltaSeconds);
+
+	// Update the vehicle fishtailing.
+	void AIUpdateFishTailing(float deltaSeconds);
+
+#pragma endregion AIVehicleControl
+
 #pragma region PickupsAvailable
 
 public:

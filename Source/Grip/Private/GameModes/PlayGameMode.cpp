@@ -321,6 +321,78 @@ void APlayGameMode::BeginPlay()
 		vehicle->PostSpawn(index++, true, false);
 	}
 
+#pragma region AIVehicleControl
+
+	// Now setup all the remaining bot vehicles.
+
+	TArray<int32> bots;
+
+	int32 maxPlayers = CalculateMaxPlayers();
+	int32 startIndex = Vehicles.Num();
+
+	for (int32 i = 0; i < maxPlayers - startIndex; i++)
+	{
+		bots.Emplace(-1);
+	}
+
+	// OK, so we have a list of bots that is relevant to the current game setup.
+
+	for (int32 i = Vehicles.Num(); i < maxPlayers; i++)
+	{
+		APlayerStart* startPoint = Cast<APlayerStart>(ChoosePlayerStartProperly(nullptr, maxPlayers));
+
+		if (startPoint != nullptr)
+		{
+			FRotator rotation = startPoint->GetActorRotation();
+			FVector offset = rotation.RotateVector(FVector(0.0f, 0.0f, 1.0f));
+			FVector location = startPoint->GetActorLocation() + offset;
+			TSubclassOf<ABaseVehicle> vehicleBlueprint;
+
+			// Right now we can only use what it specified in the play game mode blueprint in terms
+			// of which bot vehicles to create. Normally there would be a sophisticated system in
+			// place for assigning appropriate bot characters through game progression.
+
+			if (GameStateOverrides != nullptr &&
+				GameStateOverrides->OverrideGrid == true)
+			{
+				if (GameStateOverrides->Grid.Num() > i - startIndex)
+				{
+					vehicleBlueprint = GameStateOverrides->Grid[i - startIndex];
+				}
+			}
+			else
+			{
+				// If the grid is not overridden, then use the blueprint that the player is using.
+
+				vehicleBlueprint = Vehicles[0]->GetClass();
+			}
+
+			ABaseVehicle* vehicle = Cast<ABaseVehicle>(UGameplayStatics::BeginDeferredActorSpawnFromClass(this, vehicleBlueprint, FTransform(rotation, location), ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn));
+
+			if (vehicle != nullptr)
+			{
+				vehicle->PostSpawn(index++, false, true);
+
+				UGameplayStatics::FinishSpawningActor(vehicle, FTransform(rotation, location));
+			}
+		}
+	}
+
+	// Now setup the AI bots for their revving and burnouts on the start line.
+
+	for (ABaseVehicle* vehicle : Vehicles)
+	{
+		if (vehicle->IsAIVehicle() == true)
+		{
+			if (vehicle->Antigravity == false)
+			{
+				vehicle->GetAI().WillRevOnStartLine = FMath::FRand() <= 0.5f;
+			}
+		}
+	}
+
+#pragma endregion AIVehicleControl
+
 	GameSequence = EGameSequence::Initialise;
 
 	// Record all of the frictional actors in the level.

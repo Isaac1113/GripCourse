@@ -344,6 +344,13 @@ public:
 
 #pragma endregion AINavigation
 
+#pragma region AIVehicleControl
+
+	// Get the curvature of the spline in degrees over distance (in withRespectTo space).
+	FRotator GetCurvatureOverDistance(float distance, float& overDistance, int32 direction, const FQuat& withRespectTo, bool absolute) const;
+
+#pragma endregion AIVehicleControl
+
 };
 
 #pragma endregion NavigationSplines
@@ -594,6 +601,13 @@ public:
 	FVector GetWorldClosestOffset(float distance, bool raw = false) const;
 
 #pragma endregion AINavigation
+
+#pragma region AIVehicleControl
+
+	// Get the curvature of the spline in degrees over distance (in withRespectTo space).
+	virtual FRotator GetCurvatureOverDistance(float distance, float& overDistance, int32 direction, const FQuat& withRespectTo, bool absolute) const override;
+
+#pragma endregion AIVehicleControl
 
 };
 

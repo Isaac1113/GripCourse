@@ -2268,4 +2268,101 @@ FVector UPursuitSplineComponent::GetWorldSpaceUpVectorAtDistanceAlongSpline(floa
 
 #pragma endregion AINavigation
 
+#pragma region AIVehicleControl
+
+/**
+* Get the curvature of the route in degrees over distance (in withRespectTo space).
+***********************************************************************************/
+
+FRotator FRouteFollower::GetCurvatureOverDistance(float distance, float& overDistance, int32 direction, const FQuat& withRespectTo, bool absolute) const
+{
+	FRotator d0 = FRotator::ZeroRotator;
+	FRotator d1 = FRotator::ZeroRotator;
+
+	if (GRIP_POINTER_VALID(ThisSpline) == true)
+	{
+		d0 = ThisSpline->GetCurvatureOverDistance(distance, overDistance, direction, withRespectTo, absolute);
+	}
+
+	if (GRIP_POINTER_VALID(NextSpline) == true &&
+		NextSpline != ThisSpline)
+	{
+		d1 = NextSpline->GetCurvatureOverDistance(NextSwitchDistance, overDistance, direction, withRespectTo, absolute);
+	}
+
+	return d0 + d1;
+}
+
+/**
+* Get the curvature of the spline in degrees over distance (in withRespectTo space).
+***********************************************************************************/
+
+FRotator UPursuitSplineComponent::GetCurvatureOverDistance(float distance, float& overDistance, int32 direction, const FQuat& withRespectTo, bool absolute) const
+{
+	TArray<FPursuitPointExtendedData>& pursuitPointExtendedData = PursuitSplineParent->PointExtendedData;
+
+	if (pursuitPointExtendedData.Num() < 2)
+	{
+		return FRotator::ZeroRotator;
+	}
+
+	FRotator degrees = FRotator::ZeroRotator;
+	float endDistance = distance + (overDistance * direction);
+
+	if (IsClosedLoop() == false)
+	{
+		endDistance = ClampDistance(endDistance);
+		overDistance -= FMath::Abs(endDistance - distance);
+	}
+	else
+	{
+		overDistance = 0.0f;
+	}
+
+	int32 key0 = 0;
+	int32 key1 = 0;
+	float ratio = 0.0f;
+	bool transform = withRespectTo.IsIdentity() == false;
+	float iterationDistance = FMathEx::MetersToCentimeters(ExtendedPointMeters);
+	FQuat invWithRespectTo = withRespectTo.Inverse();
+	int32 numIterations = FMath::CeilToInt(FMath::Abs(endDistance - distance) / iterationDistance);
+	int32 numPoints = pursuitPointExtendedData.Num();
+
+	GetExtendedPointKeys(distance, key0, key1, ratio);
+
+	FRotator lastRotation = (invWithRespectTo * pursuitPointExtendedData[key0].Quaternion).Rotator();
+
+	for (int32 i = 0; i < numIterations; i++)
+	{
+		// Calculate the array index number for this iteration.
+
+		if (++key0 >= numPoints)
+		{
+			key0 = (IsClosedLoop() == true) ? key0 - numPoints : numPoints - 1;
+		}
+
+		// Get the rotation at this sample point, with respect to another rotation if given.
+
+		FQuat quaternion = pursuitPointExtendedData[key0].Quaternion;
+		FRotator rotation = (transform == true) ? (invWithRespectTo * quaternion).Rotator() : quaternion.Rotator();
+
+		// Now calculate and sum the angular differences between this sample and the last.
+
+		if (absolute == true)
+		{
+			degrees += FMathEx::GetUnsignedDegreesDifference(lastRotation, rotation);
+		}
+		else
+		{
+			degrees += FMathEx::GetSignedDegreesDifference(lastRotation, rotation);
+		}
+
+		lastRotation = rotation;
+	}
+
+	return degrees;
+}
+
+#pragma endregion AIVehicleControl
+
 #pragma endregion NavigationSplines

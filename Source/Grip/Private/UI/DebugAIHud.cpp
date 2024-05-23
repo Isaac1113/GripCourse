@@ -70,6 +70,16 @@ void ADebugAIHUD::DrawHUD()
 		AddText(TEXT("Driving Mode"), FText::FromString(GetDrivingMode(Vehicle->GetAI().DrivingMode)));
 		AddInt(TEXT("Mode Distance"), (int32)Vehicle->GetAI().DistanceInDrivingMode());
 
+#pragma region AIVehicleControl
+
+		AddFloat(TEXT("Steering"), Vehicle->Control.SteeringPosition);
+		AddFloat(TEXT("Throttle"), Vehicle->Control.ThrottleInput);
+		AddFloat(TEXT("Brake"), Vehicle->Control.BrakePosition);
+		AddBool(TEXT("Drifting"), Vehicle->IsDrifting());
+		AddBool(TEXT("Fishtailing"), Vehicle->AI.Fishtailing);
+
+#pragma endregion AIVehicleControl
+
 		if (GRIP_POINTER_VALID(Vehicle->GetAI().RouteFollower.ThisSpline) == true)
 		{
 			AddText(TEXT("This Spline"), FText::FromString(Vehicle->GetAI().RouteFollower.ThisSpline->ActorName));

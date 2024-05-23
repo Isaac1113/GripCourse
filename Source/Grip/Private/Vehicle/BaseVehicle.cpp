@@ -688,6 +688,99 @@ void ABaseVehicle::NotifyHit(class UPrimitiveComponent* thisComponent, class AAc
 	if (hitResult.IsValidBlockingHit() == true)
 	{
 
+#pragma region AIVehicleControl
+
+		FVector localLocation = GetActorTransform().InverseTransformPosition(hitLocation);
+
+		ContactPoints[0].Emplace(localLocation);
+		ContactForces[0].Emplace(normalForce);
+
+		float minCollisionDistance = 1.0f * 100.0f;
+		float Y = (IsFlipped() == true) ? -localLocation.Y : localLocation.Y;
+
+		// Register the general blockages.
+
+		if (localLocation.X > minCollisionDistance)
+		{
+			AI.CollisionBlockage |= VehicleBlockedFront;
+		}
+		else if (localLocation.X < -minCollisionDistance)
+		{
+			AI.CollisionBlockage |= VehicleBlockedRear;
+		}
+
+		if (Y > minCollisionDistance)
+		{
+			AI.CollisionBlockage |= VehicleBlockedRight;
+		}
+		else if (Y < -minCollisionDistance)
+		{
+			AI.CollisionBlockage |= VehicleBlockedLeft;
+		}
+
+		if (other != nullptr &&
+			other->IsA<ABaseVehicle>() == false)
+		{
+			// Register the non-vehicle blockages.
+
+			if (localLocation.X > minCollisionDistance)
+			{
+				AI.HardCollisionBlockage |= VehicleBlockedFront;
+			}
+			else if (localLocation.X < -minCollisionDistance)
+			{
+				AI.HardCollisionBlockage |= VehicleBlockedRear;
+			}
+
+			if (Y > minCollisionDistance)
+			{
+				AI.HardCollisionBlockage |= VehicleBlockedRight;
+			}
+			else if (Y < -minCollisionDistance)
+			{
+				AI.HardCollisionBlockage |= VehicleBlockedLeft;
+			}
+		}
+
+		if (other != nullptr &&
+			other->IsA<ABaseVehicle>() == true)
+		{
+			if (VehicleCollision != nullptr)
+			{
+				// Register the vehicle blockages.
+
+				FVector extent = VehicleCollision->GetUnscaledBoxExtent();
+				float frontEdge = extent.X - 10.0f;
+				float rightEdge = extent.Y - 10.0f;
+
+				if (localLocation.X > frontEdge)
+				{
+					AI.VehicleContacts |= VehicleBlockedFront;
+				}
+				else if (localLocation.X < -frontEdge)
+				{
+					AI.VehicleContacts |= VehicleBlockedRear;
+				}
+
+				if (Y > rightEdge)
+				{
+					AI.VehicleContacts |= VehicleBlockedRight;
+				}
+				else if (Y < -rightEdge)
+				{
+					AI.VehicleContacts |= VehicleBlockedLeft;
+				}
+
+				if (Y > rightEdge ||
+					Y < -rightEdge)
+				{
+					AIResetSplineWeaving();
+				}
+			}
+		}
+
+#pragma endregion AIVehicleControl
+
 #pragma region VehicleSurfaceImpacts
 
 		if (PlayGameMode != nullptr &&
@@ -2129,6 +2222,39 @@ void ABaseVehicle::InterpolateControlInputs(float deltaSeconds)
 
 		Control.ThrottleInput = CalculateAssistedThrottleInput();
 	}
+
+#pragma region AIVehicleControl
+
+#if GRIP_BOT_SLOPPY_STEERING
+	else
+	{
+		if (AI.BotVehicle == true)
+		{
+			// Make the steering sloppy for AI vehicles at lower difficulty levels.
+
+			if (PlayGameMode != nullptr)
+			{
+				int32 level = GameState->GetDifficultyLevel();
+
+				if (level <= 1
+#if WITH_EDITOR
+					&& PlayGameMode->GameStateOverrides != nullptr && PlayGameMode->GameStateOverrides->SeriousBotBehaviour == false
+#endif // WITH_EDITOR
+					)
+				{
+					float levelScale = (float)((1 - level) + 1) * 0.5f;
+					float speedSloppiness = FMath::Min(1.0f, GetSpeedKPH() / 350.0f);
+					float positionScale = FMath::Max(0.0f, RaceState.DragCatchupRatio);
+					float ratio = speedSloppiness * levelScale * positionScale;
+
+					steeringInputSpeed = FMath::Lerp(steeringInputSpeed, steeringInputSpeed * 0.25f, ratio);
+				}
+			}
+		}
+	}
+#endif // GRIP_BOT_SLOPPY_STEERING
+
+#pragma endregion AIVehicleControl
 
 	// Interpolate the steering and brake positions.
 
@@ -3787,6 +3913,12 @@ void ABaseVehicle::SetAIDriver(bool aiDriver, bool setVehicle, bool setInputMapp
 		if (AI.BotDriver == true)
 		{
 
+#pragma region AIVehicleControl
+
+			AI.SetDrivingMode(EVehicleAIDrivingMode::GeneralManeuvering);
+
+#pragma endregion AIVehicleControl
+
 #pragma region AINavigation
 
 			// Find nearest to current lap distance.
@@ -4056,6 +4188,12 @@ void ABaseVehicle::CompletePostSpawn()
 				}
 			}
 		}
+
+#pragma region AIVehicleControl
+
+		AI.WheelplayStartTime = (FMath::FRand() * 3.0f);
+
+#pragma endregion AIVehicleControl
 
 #pragma region VehicleAudio
 

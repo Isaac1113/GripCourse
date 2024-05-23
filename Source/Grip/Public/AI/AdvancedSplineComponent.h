@@ -149,6 +149,15 @@ protected:
 	// The distance at which extended points are laid out along a spline.
 	static const int32 ExtendedPointMeters = 10;
 
+#pragma region AIVehicleControl
+
+public:
+
+	// Get the curvature of the spline in degrees over distance (in withRespectTo space).
+	virtual FRotator GetCurvatureOverDistance(float distance, float& overDistance, int32 direction, const FQuat& withRespectTo, bool absolute) const;
+
+#pragma endregion AIVehicleControl
+
 #pragma endregion NavigationSplines
 
 };

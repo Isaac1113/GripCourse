@@ -675,6 +675,36 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 						}
 					}
 
+#pragma region AIVehicleControl
+
+					if (AI.BotDriver == true)
+					{
+						check(FMath::IsNaN(AI.FishtailRecovery) == false);
+
+						if ((AI.FishtailRecovery != 0.0f) &&
+							(surfaceFriction > KINDA_SMALL_NUMBER) &&
+							((wheel.HasRearPlacement() == true && Physics.SteeringBias > 0.0f) ||
+							(wheel.HasRearPlacement() == false && Physics.SteeringBias < 0.0f)))
+						{
+							float baseSurfaceFriction = 1.0f;
+
+							if (DrivingSurfaceCharacteristics != nullptr)
+							{
+								baseSurfaceFriction = DrivingSurfaceCharacteristics->GetTireFriction(EGameSurface::Asphalt);
+							}
+
+							float scale = baseSurfaceFriction / surfaceFriction;
+
+							check(FMath::IsNaN(baseSurfaceFriction) == false);
+							check(FMath::IsNaN(surfaceFriction) == false);
+							check(FMath::IsNaN(AI.FishtailRecovery) == false);
+
+							stablisingGrip *= 1.0f + (AI.FishtailRecovery * 0.333f * scale);
+						}
+					}
+
+#pragma endregion AIVehicleControl
+
 					// Usually stablisingGrip applies more grip on the end opposite the driving
 					// direction to provide solid control - the rear end when driving forwards
 					// for example.

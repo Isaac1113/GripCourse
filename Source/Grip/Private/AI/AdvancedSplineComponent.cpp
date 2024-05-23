@@ -306,4 +306,64 @@ void UAdvancedSplineComponent::CalculateSections()
 {
 }
 
+#pragma region AIVehicleControl
+
+/**
+* Get the curvature of the spline in degrees over distance (in withRespectTo space).
+***********************************************************************************/
+
+FRotator UAdvancedSplineComponent::GetCurvatureOverDistance(float distance, float& overDistance, int32 direction, const FQuat& withRespectTo, bool absolute) const
+{
+	FRotator degrees = FRotator::ZeroRotator;
+	float endDistance = distance + (overDistance * direction);
+
+	if (IsClosedLoop() == false)
+	{
+		endDistance = ClampDistance(endDistance);
+		overDistance -= FMath::Abs(endDistance - distance);
+	}
+	else
+	{
+		overDistance = 0.0f;
+	}
+
+	float length = GetSplineLength();
+	bool transform = withRespectTo.IsIdentity() == false;
+	float iterationDistance = FMathEx::MetersToCentimeters(ExtendedPointMeters);
+	FQuat invWithRespectTo = withRespectTo.Inverse();
+	int32 numIterations = FMath::CeilToInt(FMath::Abs(endDistance - distance) / iterationDistance);
+	FRotator lastRotation = (invWithRespectTo * GetQuaternionAtDistanceAlongSpline(distance, ESplineCoordinateSpace::World)).Rotator();
+
+	for (int32 i = 0; i < numIterations; i++)
+	{
+		// Calculate the current distance along the spline.
+
+		distance += iterationDistance * direction;
+		distance = ClampDistanceAgainstLength(distance, length);
+
+		// Get the rotation at that distance along the spline, with respect to another
+		// rotation if given.
+
+		FQuat quaternion = GetQuaternionAtDistanceAlongSpline(distance, ESplineCoordinateSpace::World);
+		FRotator rotation = (transform == true) ? (invWithRespectTo * quaternion).Rotator() : quaternion.Rotator();
+
+		// Now calculate and sum the angular differences between this sample and the last.
+
+		if (absolute == true)
+		{
+			degrees += FMathEx::GetUnsignedDegreesDifference(lastRotation, rotation);
+		}
+		else
+		{
+			degrees += FMathEx::GetSignedDegreesDifference(lastRotation, rotation);
+		}
+
+		lastRotation = rotation;
+	}
+
+	return degrees;
+}
+
+#pragma endregion AIVehicleControl
+
 #pragma endregion NavigationSplines

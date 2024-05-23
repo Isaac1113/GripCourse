@@ -150,6 +150,54 @@ void ADebugVehicleHUD::DrawHUD()
 				index++;
 			}
 		}
+
+#pragma region AIVehicleControl
+
+		// Show the collision contacts.
+
+		int32 index = 0;
+
+		for (FVector& position : vehicle->ContactPoints[1])
+		{
+			FVector startPoint = vehicle->VehicleMesh->GetComponentTransform().TransformPosition(position);
+
+			AddBox(startPoint, FLinearColor(1.0f, 0.0f, 1.0f), 10.0f);
+
+			FVector force = vehicle->ContactForces[1][index] * 0.0001f;
+			float forceReport = force.Size();
+
+			if (force.Size() > 5.0f * 100.0f)
+			{
+				force.Normalize();
+				force *= 5.0f * 100.0f;
+			}
+
+			FVector endPoint = startPoint + force;
+
+			AddLine(startPoint, endPoint, FLinearColor(1.0f, 0.0f, 1.0f));
+
+			FVector from = vehicle->Camera->GetComponentTransform().InverseTransformPositionNoScale(startPoint);
+			FVector to = vehicle->Camera->GetComponentTransform().InverseTransformPositionNoScale(endPoint);
+			float scale = 1.0f;
+
+			if (from.X > to.X)
+			{
+				scale = FMath::Lerp(10.0f, 30.0f, FMath::Min(((from.X - to.X) / (5.0f * 100.0f)), 1.0f));
+			}
+			else
+			{
+				scale = FMath::Lerp(10.0f, 2.0f, FMath::Min(((to.X - from.X) / (5.0f * 100.0f)), 1.0f));
+			}
+
+			AddBox(endPoint, FLinearColor(0.5f, 0.0f, 1.0f), scale);
+
+			AddTextIntAt(TEXT("FS"), (int32)(forceReport), startPoint, -10.0f, 0.0f);
+
+			index++;
+		}
+
+#pragma endregion AIVehicleControl
+
 	}
 }
 

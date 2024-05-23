@@ -338,6 +338,16 @@ public:
 
 #pragma endregion AINavigation
 
+#pragma region AIVehicleControl
+
+	// Request a new driving mode for the vehicle.
+	void SetDrivingMode(EVehicleAIDrivingMode mode);
+
+	// Update the start-line engine revving.
+	void UpdateRevving(float deltaSeconds, bool gameStarted);
+
+#pragma endregion AIVehicleControl
+
 };
 
 /**
