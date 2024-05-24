@@ -348,6 +348,28 @@ public:
 
 #pragma endregion AIVehicleControl
 
+#pragma region AIVehicleRollControl
+
+	// The airborne roll control stage for enacting air control.
+	ERollControlStage AirborneRollControl = ERollControlStage::Inactive;
+
+	// Do we have a roll target surfaced detected?
+	bool RollTargetDetected;
+
+	// The world location of the surface we're using for the roll target.
+	FVector RollControlLocation;
+
+	// The world normal of the surface we're using for the roll target.
+	FVector RollControlNormal;
+
+	// The game surface we're using for the roll target.
+	EGameSurface RollControlSurfaceType;
+
+	// Timer used for roll control.
+	float RollControlTime = 0.0f;
+
+#pragma endregion AIVehicleRollControl
+
 };
 
 /**

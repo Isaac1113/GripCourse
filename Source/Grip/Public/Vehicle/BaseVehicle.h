@@ -1697,6 +1697,18 @@ private:
 
 #pragma endregion AIVehicleControl
 
+#pragma region AIVehicleRollControl
+
+private:
+
+	// Given all the current state, update the airborne roll control inputs to the vehicle to achieve the desired goals.
+	float AICalculateRollControlInputs(const FTransform& transform, float deltaSeconds);
+
+	// Perform the control required to match the target roll.
+	void AIPerformRollControl(float relativeRollTarget, float rollTargetTime, float& steer, ERollControlStage& rollControl) const;
+
+#pragma endregion AIVehicleRollControl
+
 #pragma region PickupsAvailable
 
 public:

@@ -1296,6 +1296,12 @@ void ABaseVehicle::AICalculateControlInputs(const FTransform& transform, const F
 	bool handbrake = false;
 	float throttle = 0.0f;
 
+#pragma region AIVehicleRollControl
+
+	float rollControlSteering = AICalculateRollControlInputs(transform, deltaSeconds);
+
+#pragma endregion AIVehicleRollControl
+
 	if (AI.DrivingMode == EVehicleAIDrivingMode::JTurnToReorient)
 	{
 		throttle = -1.0f;
@@ -1439,6 +1445,15 @@ void ABaseVehicle::AICalculateControlInputs(const FTransform& transform, const F
 			steer = FMath::Sin((PI * 0.5f * time) * cyclesPerSecond) * 0.8f;
 		}
 	}
+
+#pragma region AIVehicleRollControl
+
+	if (rollControlSteering != GRIP_UNSPECIFIED_CONTROLLER_INPUT)
+	{
+		steer = rollControlSteering;
+	}
+
+#pragma endregion AIVehicleRollControl
 
 	// Setup and handle the J turn steering, for in the center of the turn when
 	// on full steering lock.
@@ -1746,3 +1761,206 @@ bool ABaseVehicle::AIMovementPossible() const
 }
 
 #pragma endregion AIVehicleControl
+
+#pragma region AIVehicleRollControl
+
+/**
+* Given all the current state, update the airborne roll control inputs to the
+* vehicle to achieve the desired goals.
+***********************************************************************************/
+
+float ABaseVehicle::AICalculateRollControlInputs(const FTransform& transform, float deltaSeconds)
+{
+	bool rollTargetDetected = false;
+	bool rollControlPossiblyRequired = (IsAirborne() == true && IsPracticallyGrounded(3.0f * 100.0f) == false);
+	float relativeRollTarget = 0.0f;
+	float rollTargetTime = 0.0f;
+
+	if (rollControlPossiblyRequired == true)
+	{
+		float rollTargetTimeTest = 3.0f;
+		FVector endPoint = AI.LastLocation + Physics.VelocityData.Velocity * rollTargetTimeTest;
+
+		if (AI.RollControlTime != 0.0f &&
+			Clock0p1.ShouldTickNow() == false)
+		{
+			// Don't do a line trace every frame, we can reuse the data from the last line
+			// trace for a few frames at least.
+
+			rollTargetDetected = AI.RollTargetDetected;
+
+			if (rollTargetDetected == true)
+			{
+				AI.RollControlTime = FMath::Max(0.0f, AI.RollControlTime - (deltaSeconds * rollTargetTimeTest));
+
+				// Get the last ground surface normal we detected and bring it into
+				// local, vehicle space.
+
+				FVector normal = transform.InverseTransformVector(AI.RollControlNormal);
+
+				// We now have the normal vector in 2D YZ on the vehicle's local space.
+
+				relativeRollTarget = FMath::RadiansToDegrees(FMath::Atan2(normal.Y, normal.Z));
+				rollTargetTime = AI.RollControlTime;
+			}
+		}
+		else
+		{
+			FHitResult hit;
+
+			QueryParams.bReturnPhysicalMaterial = true;
+			QueryParams.ClearIgnoredActors();
+			QueryParams.AddIgnoredActor(this);
+
+			if (GetWorld()->LineTraceSingleByChannel(hit, AI.LastLocation, endPoint, ABaseGameMode::ECC_LineOfSightTest, QueryParams) == true)
+			{
+				AI.RollControlSurfaceType = (EGameSurface)UGameplayStatics::GetSurfaceType(hit);
+
+				if (AI.RollControlSurfaceType != EGameSurface::Field &&
+					AI.RollControlSurfaceType != EGameSurface::Tractionless)
+				{
+					// Record the impact point and normal in world space so we can reuse it when estimating
+					// for a few frames rather than calling LineTraceSingleByChannel every frame.
+
+					AI.RollControlNormal = hit.ImpactNormal;
+					AI.RollControlLocation = hit.ImpactPoint;
+
+					rollTargetDetected = true;
+
+					// Get the last ground surface normal we detected and bring it into
+					// local, vehicle space.
+
+					FVector normal = transform.InverseTransformVector(AI.RollControlNormal);
+
+					// We now have the normal vector in 2D YZ on the vehicle's local space.
+
+					relativeRollTarget = FMath::RadiansToDegrees(FMath::Atan2(normal.Y, normal.Z));
+					AI.RollControlTime = rollTargetTime = ((hit.ImpactPoint - AI.LastLocation).Size() / (endPoint - AI.LastLocation).Size()) * rollTargetTimeTest;
+				}
+			}
+
+			AI.RollTargetDetected = rollTargetDetected;
+		}
+	}
+	else
+	{
+		AI.RollControlTime = 0.0f;
+	}
+
+	if (rollTargetDetected == true &&
+		rollControlPossiblyRequired == true)
+	{
+		float rollOffsetRequiresCorrection = 10.0f;
+
+		if ((FMath::Abs(Physics.VelocityData.AngularVelocity.X) > AI.RollVelocityRequiresDamping) ||
+			(FMath::Abs(relativeRollTarget) > rollOffsetRequiresCorrection && FMath::Abs(relativeRollTarget) < 180.0f - rollOffsetRequiresCorrection))
+		{
+			Propulsion.ThrottleOffWhileAirborne = true;
+		}
+	}
+
+	// If we're airborne and we've initiated air control, then use roll control to fly
+	// the ship down. Assume a flat zero roll landing for now as this is almost
+	// certainly to be the case.
+
+	float steerOutput = GRIP_UNSPECIFIED_CONTROLLER_INPUT;
+
+	if (rollTargetDetected == true &&
+		rollControlPossiblyRequired == true &&
+		Propulsion.ThrottleOffWhileAirborne == true)
+	{
+		AIPerformRollControl(relativeRollTarget, rollTargetTime, steerOutput, AI.AirborneRollControl);
+	}
+	else
+	{
+		AI.AirborneRollControl = ERollControlStage::Inactive;
+	}
+
+	return steerOutput;
+}
+
+/**
+* Perform the control required to match the target roll.
+***********************************************************************************/
+
+void ABaseVehicle::AIPerformRollControl(float relativeRollTarget, float rollTargetTime, float& steer, ERollControlStage& rollControl) const
+{
+	if (rollControl == ERollControlStage::Inactive)
+	{
+		// Check the current angular velocity and see if the correction we need to make
+		// correlates to that.
+
+		if (FMath::Abs(Physics.VelocityData.AngularVelocity.X) > AI.RollVelocityRequiresDamping)
+		{
+			rollControl = ERollControlStage::Damping;
+		}
+		else
+		{
+			rollControl = ERollControlStage::Rolling;
+		}
+	}
+
+	if (rollControl == ERollControlStage::Damping)
+	{
+		// Damp the roll to something we can use.
+
+		float predictedRoll = FMath::Abs(FRotator::NormalizeAxis((Physics.VelocityData.AngularVelocity.X * rollTargetTime) - relativeRollTarget));
+
+		if ((rollTargetTime > 0.0f) &&
+			(predictedRoll < 10.0f || predictedRoll > 170.0f))
+		{
+			steer = 0.0f;
+		}
+		else
+		{
+			if (FMath::Abs(Physics.VelocityData.AngularVelocity.X) <= AI.RollVelocityRequiresDamping)
+			{
+				rollControl = ERollControlStage::Rolling;
+			}
+			else
+			{
+				steer = (Physics.VelocityData.AngularVelocity.X < 0.5f) ? -1.0f : 1.0f;
+			}
+		}
+	}
+
+	if (rollControl == ERollControlStage::Rolling)
+	{
+		if (rollTargetTime <= 0.0f)
+		{
+			if (FMath::Abs(relativeRollTarget) < 90.0f)
+			{
+				// Roll to regular up.
+
+				steer = FMathEx::GetRatio(FMath::Abs(relativeRollTarget), 1.0f, 20.0f) * 0.5f + 0.25f;
+				steer = (relativeRollTarget > 0.0f) ? steer : -steer;
+			}
+			else
+			{
+				// Roll to inverted up as it's closer.
+
+				steer = FMathEx::GetRatio(180.0f - FMath::Abs(relativeRollTarget), 1.0f, 20.0f) * 0.5f + 0.25f;
+				steer = (relativeRollTarget > 0.0f) ? -steer : steer;
+			}
+		}
+		else
+		{
+			if (FMath::Abs(relativeRollTarget) < 90.0f)
+			{
+				// Roll to regular up.
+
+				steer = FMathEx::GetRatio(FMath::Abs(relativeRollTarget), 20.0f, 50.0f) * 0.5f + 0.5f;
+				steer = (relativeRollTarget > 0.0f) ? steer : -steer;
+			}
+			else
+			{
+				// Roll to inverted up as it's closer.
+
+				steer = FMathEx::GetRatio(180.0f - FMath::Abs(relativeRollTarget), 20.0f, 50.0f) * 0.5f + 0.5f;
+				steer = (relativeRollTarget > 0.0f) ? -steer : steer;
+			}
+		}
+	}
+}
+
+#pragma endregion AIVehicleRollControl
