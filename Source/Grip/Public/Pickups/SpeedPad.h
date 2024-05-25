@@ -95,6 +95,19 @@ public:
 	virtual float GetAttractionAngleRange() const override
 	{ return AttractionAngleRange; }
 
+#pragma region SpeedPads
+
+	// Event for when the speed pad is collected by a vehicle.
+	void OnSpeedPadCollected(class ABaseVehicle* vehicle);
+
+protected:
+
+	// Do some post initialization just before the game is ready to play.
+	virtual void PostInitializeComponents() override;
+
+	// Do some shutdown when the actor is being destroyed.
+	virtual void EndPlay(const EEndPlayReason::Type endPlayReason) override;
+
 private:
 
 	// The location of attraction, as derived from the nearest pursuit spline.
@@ -105,6 +118,11 @@ private:
 
 	// The range of attraction, in centimeters.
 	float AttractionDistanceRangeCms = 0.0f;
+
+	// The direction vector of the speed pad derived from the nearest pursuit spline.
+	FVector FacingDirection = FVector::ZeroVector;
+
+#pragma endregion SpeedPads
 
 	// Audio component for the collected sound
 	UPROPERTY(Transient)

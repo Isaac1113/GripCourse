@@ -245,6 +245,28 @@ void ABaseVehicle::UpdateAI(float deltaSeconds)
 		AI.HeadingTo += splineRotation.RotateVector(FVector(0.0f, AI.GetSplineWeavingOffset(true), 0.0f));
 		AI.WeavingPosition = AI.HeadingTo;
 
+#pragma region AIAttraction
+
+		// So we know where we want to be heading generally, now we need to see if there's anything in the
+		// way and avoid it if at all possible.
+
+		AIUpdateTargetsOfOpportunity(location, direction, wasHeadingTo, ahead, numIterations, accuracy, deltaSeconds);
+
+		if (GRIP_POINTER_VALID(AI.AttractedToActor) == true)
+		{
+			// We transition from an attraction point to a moving spline target.
+
+			AI.HeadingTo = FMath::Lerp(AI.HeadingTo, AI.AttractedTo->GetAttractionLocation(), FMathEx::EaseInOut(AI.PursuitSplineFollowingRatio));
+		}
+
+		if (AI.LockSteeringToSplineDirection == true &&
+			AI.LockSteeringAvoidStaticObjects == false)
+		{
+			AI.HeadingTo = AI.WeavingPosition;
+		}
+
+#pragma endregion AIAttraction
+
 		hasHeading = true;
 	}
 
@@ -849,6 +871,134 @@ void FVehicleAI::UpdateRevving(float deltaSeconds, bool gameStarted)
 	}
 }
 
+#pragma endregion AIVehicleControl
+
+#pragma region AIAttraction
+
+/**
+* Keep track of targets of opportunity, deciding if any current target is still
+* valid and also picking a new target if we have no current target.
+***********************************************************************************/
+
+void ABaseVehicle::AIUpdateTargetsOfOpportunity(const FVector& location, const FVector& direction, const FVector& wasHeadingTo, float ahead, int32 numIterations, float accuracy, float deltaSeconds)
+{
+	// Priority is like this:
+	//	Following a vehicle to improve weapon effectiveness
+	//	Attracted towards a target for some purpose (collecting a pickup, knocking out a support strut on a destructible)
+	//	Blocking another vehicle behind you
+
+	// If we're currently attracted towards something then see if we're still in range of that attraction.
+
+	if (GRIP_POINTER_VALID(AI.AttractedToActor) == true)
+	{
+		IAttractableInterface* attractedTo = AI.AttractedTo;
+
+		if (attractedTo->IsAttractionActive() == false ||
+			attractedTo->IsAttractorInRange(location, direction, true) == false)
+		{
+			// We've just stopping being attracted to a particular attractor,
+			// most normally because we just hit it. So, forget the attraction.
+
+			AICancelAttraction();
+
+			AI.RemovePursuitSplineTransition();
+
+			// Now smoothly join back with the pursuit spline, as we'll likely be
+			// some distance to the side of it and we don't want to turn hard to
+			// back into line.
+
+			AIResetSplineWeaving();
+
+			AIUpdateSplineWeaving(location);
+		}
+	}
+
+	if (Clock0p1.ShouldTickNow() == true)
+	{
+		// Only do the time-insensitive stuff every 0.1 seconds where delta times don't matter.
+
+		if (IsUsingTurbo() == false &&
+			GRIP_POINTER_VALID(AI.AttractedToActor) == false)
+		{
+			// Look at all the attractables around the track to see if we should head towards any of them.
+
+			if (PlayGameMode != nullptr)
+			{
+				float leastAngle = 0.0f;
+
+				for (auto& element : PlayGameMode->Attractables)
+				{
+					IAttractableInterface* attractable = element.Value;
+
+					if (attractable != nullptr)
+					{
+						if (attractable->IsAttractionActive() == true &&
+							attractable->IsAttractorAttracting() == false &&
+							attractable->IsAttractorInRange(location, direction, false) == true)
+						{
+							FVector attractableDirection = attractable->GetAttractionLocation() - location;
+
+							attractableDirection.Normalize();
+
+							float angle = FVector::DotProduct(attractableDirection, direction);
+
+							if (leastAngle < FMath::Abs(angle))
+							{
+								leastAngle = FMath::Abs(angle);
+
+								AI.AttractedTo = attractable;
+								AI.AttractedToActor = element.Key;
+							}
+						}
+					}
+				}
+
+				if (GRIP_POINTER_VALID(AI.AttractedToActor) == true)
+				{
+					IAttractableInterface* attractable = AI.AttractedTo;
+
+					attractable->Attract(this);
+
+					// Smoothly join with the attractor from a spline.
+
+					AI.SetupPursuitSplineTransition();
+				}
+			}
+		}
+	}
+}
+
+/**
+* Setup a smooth transition between a world location for a spline.
+***********************************************************************************/
+
+void FVehicleAI::SetupPursuitSplineTransition()
+{
+	if (PursuitSplineTransitionInProgress() == false)
+	{
+		PursuitSplineFollowingRatio = 0.0f;
+		PursuitSplineTransitionSpeed = 2.0f;
+	}
+}
+
+/**
+* Remove any pursuit spline transition that might be in effect.
+***********************************************************************************/
+
+void FVehicleAI::RemovePursuitSplineTransition()
+{
+	// If we're transitioning back to a spline then just jump straight to it
+	// as the point we were aiming at has probably just passed us.
+
+	PursuitSplineFollowingRatio = 0.0f;
+	PursuitSplineWeavingRatio = 0.0f;
+	PursuitSplineTransitionSpeed = 0.0f;
+}
+
+#pragma endregion AIAttraction
+
+#pragma region AIVehicleControl
+
 /**
 * Manage drifting around long, sweeping corners.
 ***********************************************************************************/
@@ -866,6 +1016,44 @@ void ABaseVehicle::AIUpdateDrifting(const FVector& location, const FVector& dire
 		// We don't want to drift for a short period, we really want it for several seconds
 		// as otherwise it's not really worth doing, but how can we determine that ahead
 		// of time?
+
+#pragma region AIAttraction
+
+		// For static attraction targets we can do a simple bit of math - if the target is
+		// greater than x angle away from the vehicle's direction, then drift into it.
+
+		if (GRIP_POINTER_VALID(AI.AttractedToActor) == true)
+		{
+			FVector targetPosition = AI.AttractedTo->GetAttractionLocation();
+			FVector difference = targetPosition - location;
+
+			difference.Normalize();
+
+			float dotProduct = FVector::DotProduct(difference, direction);
+
+			// TODO: Calculate the angle and don't just use 60. It needs to take into account
+			// speed / wheel angle over time.
+
+			if (dotProduct > FMathEx::DegreesToDotProduct(60.0f))
+			{
+				StartDrifting();
+			}
+		}
+
+		// For moving attraction targets, right now just the current spline, then we need
+		// to identify the curvature of the spline that the target point is following for
+		// the next couple of seconds. We don't know the turning rate of the vehicle, and
+		// it will be different for different vehicles / velocities / surfaces anyway,
+		// so we'll have to take an educated guess at the math on this one. We can base
+		// this on speed and wheel angle to derive a nominal degrees per second vs the
+		// curvature of the spline in degrees per second.
+
+		// If the vehicle cannot keep up with the target over the next couple of seconds
+		// at least then we should initiate a drift.
+
+		else
+
+#pragma endregion AIAttraction
 
 		{
 			// Obtain the change in rotation of the spline over 2 seconds time at the current

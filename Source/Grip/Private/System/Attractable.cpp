@@ -34,5 +34,63 @@ UAttractableInterface::UAttractableInterface(const FObjectInitializer& objectIni
 
 bool IAttractableInterface::IsAttractorInRange(const FVector& fromLocation, const FVector& fromDirection, bool alreadyCaptured)
 {
+
+#pragma region AIAttraction
+
+	float angleRange = GetAttractionAngleRange();
+	float distanceRange = GetAttractionDistanceRange();
+
+	if (angleRange > KINDA_SMALL_NUMBER &&
+		distanceRange > KINDA_SMALL_NUMBER)
+	{
+		FVector attractionLocation = GetAttractionLocation();
+		float distanceSqr = (fromLocation - attractionLocation).SizeSquared();
+
+		if (distanceSqr < distanceRange * distanceRange)
+		{
+			float distance = FMath::Sqrt(distanceSqr);
+
+			if (alreadyCaptured == true ||
+				distance < GetAttractionMinCaptureDistanceRange())
+			{
+				FVector toTarget = fromLocation - attractionLocation;
+
+				toTarget.Normalize();
+
+				// We increase the range up to 180 degrees the closer the target is to the attractor,
+				// but using squared rather than linear interpolation, so all the increase in range is
+				// when the target is very close to the attractor.
+
+				float ratio = 1.0f - (distance / distanceRange);
+
+				angleRange = FMath::Lerp(angleRange, FMath::Min(180.0f, angleRange * 3.0f), ratio * ratio);
+
+				// Better to use ConeDegreesToDotProduct here instead of DotProductToDegrees later
+				// as Acos is slower than Cos.
+
+				float dotProductRange = FMathEx::ConeDegreesToDotProduct(angleRange);
+
+				// The attraction direction, or FVector::ZeroVector if no direction.
+
+				FVector attractionDirection = GetAttractionDirection();
+
+				// Ensure the angle towards the attractor is in range.
+
+				if (attractionDirection == FVector::ZeroVector ||
+					FVector::DotProduct(attractionDirection, toTarget) > dotProductRange)
+				{
+					// Now ensure the orientation of the caller is in range.
+
+					if ((FVector::DotProduct(fromDirection, toTarget) * -1.0f) > dotProductRange)
+					{
+						return true;
+					}
+				}
+			}
+		}
+	}
+
+#pragma endregion AIAttraction
+
 	return false;
 }

@@ -370,6 +370,22 @@ public:
 
 #pragma endregion AIVehicleRollControl
 
+#pragma region AIAttraction
+
+	// Setup a smooth transition between a world location for a spline.
+	void SetupPursuitSplineTransition();
+
+	// Remove any pursuit spline transition that might be in effect.
+	void RemovePursuitSplineTransition();
+
+	// What actor is the vehicle currently attracted to.
+	TWeakObjectPtr<AActor> AttractedToActor;
+
+	// What actor is the vehicle currently attracted to, a cached IAttractableInterface for speed.
+	IAttractableInterface* AttractedTo = nullptr;
+
+#pragma endregion AIAttraction
+
 };
 
 /**

@@ -640,6 +640,12 @@ void ABaseVehicle::Tick(float deltaSeconds)
 
 #pragma endregion VehicleBasicForces
 
+#pragma region SpeedPads
+
+	CollectSpeedPads();
+
+#pragma endregion SpeedPads
+
 #pragma region VehicleAudio
 
 	UpdateSkidAudio(deltaSeconds);

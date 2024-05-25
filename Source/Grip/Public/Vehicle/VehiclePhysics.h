@@ -19,6 +19,44 @@
 
 #pragma region MinimalVehicle
 
+#pragma region SpeedPads
+
+class ASpeedPad;
+
+/**
+* Data for adding a speedpad boost to a vehicle.
+***********************************************************************************/
+
+struct FSpeedpadVehicleBoost
+{
+	FSpeedpadVehicleBoost() = default;
+
+	FSpeedpadVehicleBoost(ASpeedPad* speedPad, float amount, float duration, const FVector& direction)
+		: SpeedPad(speedPad)
+		, Amount(amount)
+		, Timer(0.0f)
+		, Duration(duration)
+		, Direction(direction)
+	{ }
+
+	// The speed pad that the boost came from.
+	ASpeedPad* SpeedPad = nullptr;
+
+	// Boost to the thrust from a speedpad-type device.
+	float Amount = 0.0f;
+
+	// The timer to use for applying speedpad-type boost.
+	float Timer = 0.0f;
+
+	// The duration to use for applying speedpad-type boost.
+	float Duration = 0.0f;
+
+	// The direction of the boost.
+	FVector Direction = FVector::ZeroVector;
+};
+
+#pragma endregion SpeedPads
+
 /**
 * Enumeration for the state of the auto-boost.
 ***********************************************************************************/
@@ -109,6 +147,14 @@ struct FVehiclePropulsion
 
 	// The amount of time spent in the current gear.
 	float GearTime = 0.0f;
+
+#pragma region SpeedPads
+
+	// The speed pads currently in effect with this vehicle.
+	TArray<FSpeedpadVehicleBoost> SpeedPadBoosts;
+
+#pragma endregion SpeedPads
+
 };
 
 /**

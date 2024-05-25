@@ -1709,6 +1709,35 @@ private:
 
 #pragma endregion AIVehicleRollControl
 
+#pragma region AIAttraction
+
+private:
+
+	// Keep track of targets of opportunity, deciding if any current target is still
+	// valid and also picking a new target if we have no current target.
+	void AIUpdateTargetsOfOpportunity(const FVector& location, const FVector& direction, const FVector& wasHeadingTo, float ahead, int32 numIterations, float accuracy, float deltaSeconds);
+
+	// Cancel any attraction for the AI bot.
+	void AICancelAttraction()
+	{ if (AI.AttractedTo != nullptr) AI.AttractedTo->Attract(nullptr); AI.AttractedTo = nullptr; AI.AttractedToActor.Reset(); }
+
+#pragma endregion AIAttraction
+
+#pragma region SpeedPads
+
+public:
+
+	// Add a temporary boost to the vehicle, for when running over speed pads and the like.
+	// amount is between 0 and 1, 1 being 100% more engine power.
+	// duration is in seconds.
+	// direction is the world direction to apply the speed boost force.
+	bool SpeedBoost(ASpeedPad* speedpad, float amount, float duration, const FVector& direction);
+
+	// Collect the speed pads overlapping with a vehicle.
+	void CollectSpeedPads();
+
+#pragma endregion SpeedPads
+
 #pragma region PickupsAvailable
 
 public:

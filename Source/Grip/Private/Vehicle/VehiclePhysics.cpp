@@ -320,6 +320,28 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 
 #pragma endregion VehicleGrip
 
+#pragma region SpeedPads
+
+	// Manage the speed pad boosts.
+
+	Physics.SpeedPadBoost = 0.0f;
+
+	for (int32 i = 0; i < Propulsion.SpeedPadBoosts.Num(); i++)
+	{
+		FSpeedpadVehicleBoost& boost = Propulsion.SpeedPadBoosts[i];
+
+		Physics.SpeedPadBoost += boost.Amount;
+
+		boost.Timer += deltaSeconds;
+
+		if (boost.Timer >= boost.Duration)
+		{
+			Propulsion.SpeedPadBoosts.RemoveAt(i--);
+		}
+	}
+
+#pragma endregion SpeedPads
+
 #pragma region VehicleDrifting
 
 	UpdateDriftingPhysics(deltaSeconds, steeringPosition, xdirection);
@@ -901,6 +923,17 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 
 			jetForce += xdirection * Propulsion.JetEngineThrottle * jetPower * forceScale;
 		}
+
+#pragma region SpeedPads
+
+		// Apply any speed boost from speed pads here.
+
+		if (Physics.SpeedPadBoost > KINDA_SMALL_NUMBER)
+		{
+			jetForce += xdirection * Physics.SpeedPadBoost * jetPower * forceScale;
+		}
+
+#pragma endregion SpeedPads
 
 		if (jetForce != FVector::ZeroVector)
 		{
