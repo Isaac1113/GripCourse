@@ -282,6 +282,22 @@ void APlayGameMode::BeginPlay()
 
 #pragma endregion NavigationSplines
 
+#pragma region VehicleRaceDistance
+
+	// Record all of the checkpoints in the level.
+
+	Checkpoints.Empty();
+
+	for (TActorIterator<ATrackCheckpoint> actorItr(world); actorItr; ++actorItr)
+	{
+		if (FWorldFilter::IsValid(*actorItr, GlobalGameState) == true)
+		{
+			Checkpoints.Emplace(*actorItr);
+		}
+	}
+
+#pragma endregion VehicleRaceDistance
+
 	// Find a master racing spline against which we can measure race distance.
 
 	if (MasterRacingSpline.IsValid() == false)
@@ -301,6 +317,46 @@ void APlayGameMode::BeginPlay()
 
 	BuildPursuitSplines(false, FName(*GlobalGameState->TransientGameState.NavigationLayer), world, GlobalGameState, MasterRacingSpline.Get());
 	EstablishPursuitSplineLinks(false, FName(*GlobalGameState->TransientGameState.NavigationLayer), world, GlobalGameState, MasterRacingSpline.Get());
+
+#pragma region VehicleRaceDistance
+
+	// Link each of the checkpoints to the master racing spline.
+
+	int32 numCheckpoints = Checkpoints.Num();
+
+	if (numCheckpoints > 0)
+	{
+		Checkpoints.StableSort([] (const ATrackCheckpoint& object1, const ATrackCheckpoint& object2)
+			{
+				return object1.Order < object2.Order;
+			});
+
+		// Ensure that all of the start points are behind the first track checkpoint.
+
+		for (APlayerStart* startPoint : Startpoints)
+		{
+			if (startPoint->IsA<APlayerStartPIE>() == true)
+			{
+				UnknownPlayerStart = true;
+			}
+			else
+			{
+				ensureAlways(FVector::DotProduct(Checkpoints[0]->GetActorRotation().Vector(), startPoint->GetActorLocation() - Checkpoints[0]->GetActorLocation()) > 0.0f);
+			}
+		}
+
+		if (MasterRacingSpline != nullptr)
+		{
+			for (int32 i = 0; i < numCheckpoints; i++)
+			{
+				Checkpoints[i]->DistanceAlongMasterRacingSpline = MasterRacingSpline->GetNearestDistance(Checkpoints[i]->GetActorLocation(), 0.0f, 0.0f, 10, 50);
+			}
+
+			MasterRacingSplineStartDistance = Checkpoints[0]->DistanceAlongMasterRacingSpline;
+		}
+	}
+
+#pragma endregion VehicleRaceDistance
 
 	int32 index = 0;
 
@@ -961,6 +1017,145 @@ void APlayGameMode::QuitGame(bool force)
 
 void APlayGameMode::UpdateRacePositions(float deltaSeconds)
 {
+
+#pragma region VehicleRaceDistance
+
+	if (GameFinishedAt == 0.0f &&
+		GameSequence == EGameSequence::Play)
+	{
+		// The game hasn't ended yet and is ostensibly still in play. Mark it as finished by default now
+		// and have further code in this function correct it back to unfinished when appropriate.
+
+		GameFinishedAt = GetRealTimeClock();
+	}
+
+	if (GameSequence >= EGameSequence::Play)
+	{
+		CalculateRanksAndScoring();
+	}
+
+	// Calculate the mean race distance of the human players in the race.
+
+	int32 i = 0;
+	int32 numHumans = 0;
+	int32 firstRacePosition = 0;
+	float meanHumanDistance = 0.0f;
+
+	TArray<FPlayerRaceState*, TInlineAllocator<16>> raceStates;
+
+	for (ABaseVehicle* vehicle : Vehicles)
+	{
+		if (vehicle->GetRaceState().PlayerCompletionState < EPlayerCompletionState::Complete)
+		{
+			raceStates.Emplace(&vehicle->GetRaceState());
+		}
+		else if (vehicle->GetRaceState().PlayerCompletionState == EPlayerCompletionState::Complete)
+		{
+			firstRacePosition = FMath::Max(firstRacePosition, vehicle->GetRaceState().RacePosition + 1);
+		}
+
+		if (vehicle->IsAIVehicle() == false)
+		{
+			numHumans++;
+			meanHumanDistance += vehicle->GetRaceState().EternalRaceDistance;
+		}
+
+		if (GameSequence == EGameSequence::Play &&
+			vehicle->GetRaceState().PlayerCompletionState < EPlayerCompletionState::Complete)
+		{
+			// If the game is still being played and this vehicle hasn't finished yet.
+
+			if (vehicle->IsAIVehicle() == false)
+			{
+				// If this vehicle is human or we need to wait for all AI bots to finish too,
+				// then signal the game as unfinished.
+
+				GameFinishedAt = 0.0f;
+			}
+		}
+	}
+
+	if (numHumans > 0)
+	{
+		meanHumanDistance /= numHumans;
+	}
+
+	// Detect if the race has finished (GameFinishedAt will be non-zero) and switch
+	// to the end game sequence if so.
+
+	if (GameFinishedAt != 0.0f &&
+		GameSequence == EGameSequence::Play)
+	{
+		GameSequence = EGameSequence::End;
+	}
+
+	if (raceStates.Num() > 0)
+	{
+		// Calculate the race position for each player.
+
+		raceStates.StableSort([] (const FPlayerRaceState& object1, const FPlayerRaceState& object2)
+			{
+				if (object1.RaceDistance == object2.RaceDistance) return object1.PlayerVehicle->VehicleIndex < object2.PlayerVehicle->VehicleIndex; else return object1.RaceDistance > object2.RaceDistance;
+			});
+
+		for (i = 0; i < raceStates.Num(); i++)
+		{
+			if ((raceStates[i]->PlayerCompletionState < EPlayerCompletionState::Complete) &&
+				(raceStates[i]->RaceDistance != 0.0f || GlobalGameState->GamePlaySetup.DrivingMode == EDrivingMode::Elimination))
+			{
+				raceStates[i]->RacePosition = FMath::Min(firstRacePosition++, GRIP_MAX_PLAYERS - 1);
+			}
+		}
+	}
+
+	raceStates.Empty(GRIP_MAX_PLAYERS);
+
+	if (GameSequence >= EGameSequence::Play)
+	{
+		for (ABaseVehicle* vehicle : Vehicles)
+		{
+			raceStates.Emplace(&vehicle->GetRaceState());
+		}
+
+		if (PastGameSequenceStart() == true)
+		{
+			EliminationTimer += deltaSeconds;
+
+			if (EliminationTimer >= GRIP_ELIMINATION_SECONDS)
+			{
+				EliminationTimer = 0.0f;
+
+				if (GetNumOpponentsLeft() > 1 &&
+					GlobalGameState->GamePlaySetup.DrivingMode == EDrivingMode::Elimination)
+				{
+					// Obtain the last player in the race.
+
+					int32 maxPosition = -1;
+					ABaseVehicle* rearmostVehicle = nullptr;
+
+					for (ABaseVehicle* vehicle : Vehicles)
+					{
+						if (vehicle->IsVehicleDestroyed() == false)
+						{
+							if (maxPosition < vehicle->GetRaceState().RacePosition)
+							{
+								maxPosition = vehicle->GetRaceState().RacePosition;
+								rearmostVehicle = vehicle;
+							}
+						}
+					}
+
+					if (maxPosition > 0 &&
+						rearmostVehicle != nullptr)
+					{
+					}
+				}
+			}
+		}
+	}
+
+#pragma endregion VehicleRaceDistance
+
 }
 
 /**
@@ -1600,3 +1795,66 @@ void APlayGameMode::UpdateVehicleVolumes(float deltaSeconds)
 }
 
 #pragma endregion VehicleAudio
+
+#pragma region VehicleRaceDistance
+
+/**
+* Calculate the rank and scoring for each vehicle.
+***********************************************************************************/
+
+void APlayGameMode::CalculateRanksAndScoring()
+{
+	TArray<FPlayerRaceState*, TInlineAllocator<16>> raceStates;
+
+	// Calculate the scoring for each vehicle from which rank will be determined.
+
+	for (ABaseVehicle* vehicle : Vehicles)
+	{
+		if (vehicle->GetRaceState().PlayerCompletionState != EPlayerCompletionState::Disqualified)
+		{
+			vehicle->GetRaceState().NumTotalPoints = 0;
+
+			raceStates.Emplace(&vehicle->GetRaceState());
+		}
+		else
+		{
+			// No points for disqualified vehicles.
+
+			vehicle->GetRaceState().NumTotalPoints = 0;
+		}
+	}
+
+	// Sort the race states according to total points.
+
+	// So in networked code, whenever the server talks to us it'll give us a list of game results
+	// that it knows about and will also modify the RaceRank and NumTotalPoints of each vehicle
+	// in those results so generally we'll be in agreement at this point with regard to sorting
+	// - except when there are multiple vehicles sharing the same NumTotalPoints.
+
+	if (raceStates.Num() > 0)
+	{
+		// In non-networked games, secondarily order on player name when NumTotalPoints is equal.
+
+		raceStates.StableSort([] (const FPlayerRaceState& object1, const FPlayerRaceState& object2)
+			{
+				return (object1.PlayerVehicle->GetPlayerName(false, true).Compare(object2.PlayerVehicle->GetPlayerName(false, true)) < 0);
+			});
+
+		for (int32 i = 0; i < raceStates.Num(); i++)
+		{
+			raceStates[i]->RaceRank = i;
+		}
+
+		raceStates.StableSort([] (const FPlayerRaceState& object1, const FPlayerRaceState& object2)
+			{
+				return (object1.NumTotalPoints == object2.NumTotalPoints) ? object1.RaceRank < object2.RaceRank : object1.NumTotalPoints > object2.NumTotalPoints;
+			});
+
+		for (int32 i = 0; i < raceStates.Num(); i++)
+		{
+			raceStates[i]->RaceRank = i;
+		}
+	}
+}
+
+#pragma endregion VehicleRaceDistance

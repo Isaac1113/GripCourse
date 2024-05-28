@@ -150,6 +150,201 @@ void FPlayerRaceState::Tick(float deltaSeconds, APlayGameMode* gameMode, UGlobal
 
 void FPlayerRaceState::UpdateCheckpoints(bool ignoreCheckpointSize)
 {
+
+#pragma region VehicleRaceDistance
+
+	APlayGameMode* gameMode = APlayGameMode::Get(PlayerVehicle->GetWorld());
+	UGlobalGameState* gameState = UGlobalGameState::GetGlobalGameState(PlayerVehicle);
+	float masterRacingSplineLength = gameMode->MasterRacingSplineLength;
+
+	if (gameState->IsGameModeRace() == true)
+	{
+		if (LastCheckpoint == -1)
+		{
+			// Handle setting up the checkpoints for the first time.
+
+			if (gameMode->Checkpoints.Num() > 0)
+			{
+				NextCheckpoint = 0;
+				LastCheckpoint = gameMode->Checkpoints.Num() - 1;
+			}
+		}
+
+		if (NextCheckpoint >= 0)
+		{
+			// DistanceAlongMasterRacingSpline may be greater or less than LastDistanceAlongMasterRacingSpline if
+			// the vehicle is moving backwards or has teleported. We need to handle movement in either direction,
+			// with teleporting just behaving like a very fast movement over a single frame. Teleporting will set
+			// ignoreCheckpointSize to true as it's likely it'll legitimately miss the checkpoint window.
+
+			float halfMasterRacingSplineLength = masterRacingSplineLength * 0.5f;
+			bool masterRacingSplinePresent = (gameMode->MasterRacingSpline != nullptr);
+			bool crossedSplineStart = (FMath::Abs(LastDistanceAlongMasterRacingSpline - DistanceAlongMasterRacingSpline) > halfMasterRacingSplineLength);
+			int32 lastCheckPoint = LastCheckpoint;
+			FVector location = PlayerVehicle->GetActorLocation();
+
+			do
+			{
+				// Have we crossed the next checkpoint, effectively going forwards?
+
+				int32 crossed0 = gameMode->Checkpoints[NextCheckpoint]->Crossed(LastDistanceAlongMasterRacingSpline, DistanceAlongMasterRacingSpline, masterRacingSplineLength, crossedSplineStart, PlayerVehicle->GetAI().LastLocation, location, ignoreCheckpointSize);
+
+				// Have we crossed the last checkpoint, effectively going backwards?
+
+				int32 crossed1 = gameMode->Checkpoints[LastCheckpoint]->Crossed(LastDistanceAlongMasterRacingSpline, DistanceAlongMasterRacingSpline, masterRacingSplineLength, crossedSplineStart, PlayerVehicle->GetAI().LastLocation, location, ignoreCheckpointSize);
+
+				if (crossed0 > 0)
+				{
+					// The player has crossed a checkpoint the right way, so traverse forwards to the next one.
+
+					CheckpointsReached++;
+					LastCheckpoint = NextCheckpoint++;
+					NextCheckpoint %= gameMode->Checkpoints.Num();
+
+					if (LastCheckpoint == 0)
+					{
+						// So we need a checkpoint that specifically marks the end of the course, which isn't the
+						// initial checkpoint.
+
+						EternalLapNumber++;
+						LapDistance = 0.0f;
+
+						if (EternalLapNumber > 0 &&
+							EternalLapNumber > MaxLapNumber)
+						{
+							if (gameState->GamePlaySetup.DrivingMode != EDrivingMode::Elimination)
+							{
+								// Signal that a lap was just completed, the HUD will do something with this very shortly.
+
+								LapCompleted = true;
+							}
+
+							LastLapTime = LapTime;
+
+							// Update the best lap time if we're just beat it.
+
+							if (BestLapTime == 0.0f ||
+								BestLapTime > LastLapTime)
+							{
+								BestLapTime = LastLapTime;
+							}
+
+							// Detect the end of game by checking the number of laps for this race.
+
+							if (EternalLapNumber == gameState->GeneralOptions.NumberOfLaps &&
+								(gameState->GamePlaySetup.DrivingMode == EDrivingMode::Race))
+							{
+								// Complete the game for this player if that was the last lap.
+
+								PlayerComplete(true, false, false);
+							}
+							else
+							{
+								// Otherwise reset the lap time for the new lap.
+
+								LapTime = 0.0f;
+							}
+						}
+
+						MaxLapNumber = FMath::Max(MaxLapNumber, EternalLapNumber);
+					}
+				}
+				else if (crossed1 < 0)
+				{
+					// The player has crossed a checkpoint the wrong way, so traverse backwards to the previous one.
+
+					CheckpointsReached--;
+					NextCheckpoint = LastCheckpoint;
+
+					if (--LastCheckpoint < 0)
+					{
+						EternalLapNumber--;
+
+						LastCheckpoint = gameMode->Checkpoints.Num() - 1;
+						LapDistance = masterRacingSplineLength;
+					}
+				}
+				else
+				{
+					break;
+				}
+
+				// while loop to catch large jumps in position due to teleporting and wind through all
+				// checkpoints that may have been crossed because of that. Don't jump more than 1 lap
+				// forwards or backwards though, no matter how large the jump in position is. It's
+				// highly unlikely we'll cross more than one checkpoint in a frame in any event.
+			}
+			while (lastCheckPoint != LastCheckpoint);
+
+			if (EternalLapNumber >= 0)
+			{
+				if (masterRacingSplinePresent == true)
+				{
+					float thisLapDistance = gameMode->MasterRacingSplineDistanceToLapDistance(DistanceAlongMasterRacingSpline);
+
+					if (LapDistance > thisLapDistance)
+					{
+						// If we're further behind from where we were, then just take that.
+
+						LapDistance = thisLapDistance;
+					}
+					else if ((thisLapDistance - LapDistance) > halfMasterRacingSplineLength)
+					{
+						// If we've jumped more than half a track in length, it basically means we've
+						// crossed the start line backwards so set this lap distance to 0.
+
+						LapDistance = 0.0f;
+					}
+					else
+					{
+						// We've moved forwards but not massively so we're OK, just take that forward
+						// movement.
+
+						LapDistance = thisLapDistance;
+					}
+
+					// Cap the lap distance to a maximum of the next checkpoint because DistanceAlongMasterRacingSpline
+					// is measured straight from their player's spline distance, which doesn't account for any checkpointing
+					// done until now. If the player somehow got ahead of the checkpoint without legitimately passing it,
+					// then we need to clamp the lap distance to that next checkpoint distance.
+
+					float maxLapDistance = gameMode->MasterRacingSplineDistanceToLapDistance(gameMode->Checkpoints[NextCheckpoint]->DistanceAlongMasterRacingSpline);
+
+					// maxLapDistance is now between 0 and masterRacingSplineLength. But quickly do a math error check to
+					// ensure we didn't go into negative territory, and if so, correct it. Remember, the first checkpoint
+					// is also the last checkpoint, so it needs to reflect that here by setting it to the length of the
+					// master racing spline.
+
+					if (NextCheckpoint == 0 ||
+						FMath::Abs(maxLapDistance) < KINDA_SMALL_NUMBER)
+					{
+						maxLapDistance = masterRacingSplineLength;
+					}
+
+					LapDistance = FMath::Min(LapDistance, maxLapDistance);
+
+					// Establish the number of laps done for the vehicle.
+
+					EternalRaceDistance = EternalLapNumber * masterRacingSplineLength;
+
+					// Add this lap distance into the total number of completed laps.
+
+					EternalRaceDistance += LapDistance;
+				}
+			}
+		}
+	}
+
+	if (PlayerCompletionState < EPlayerCompletionState::Complete)
+	{
+		// If the game isn't complete then copy the eternal variables to the in-game variables.
+
+		LapNumber = EternalLapNumber;
+		RaceDistance = EternalRaceDistance;
+	}
+
+#pragma endregion VehicleRaceDistance
+
 }
 
 /**

@@ -804,6 +804,13 @@ private:
 	// Upload the loading of the main UI.
 	void UpdateUILoading();
 
+#pragma region VehicleRaceDistance
+
+	// Calculate the rank and scoring for each vehicle.
+	void CalculateRanksAndScoring();
+
+#pragma endregion VehicleRaceDistance
+
 	// Calculate the maximum number of players.
 	int32 CalculateMaxPlayers() const;
 

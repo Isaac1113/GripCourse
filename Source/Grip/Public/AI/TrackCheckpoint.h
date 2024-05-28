@@ -60,4 +60,23 @@ public:
 
 	// The distance this checkpoint is along the master racing spline.
 	float DistanceAlongMasterRacingSpline = 0.0f;
+
+#pragma region VehicleRaceDistance
+
+	// Do some post initialization just before the game is ready to play.
+	virtual void PostInitializeComponents() override;
+
+#if WITH_EDITOR
+	// Ensure the width and height propagate down to the PassingVolume component.
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif // WITH_EDITOR
+
+	// Has this checkpoint been crossed, and if so in which direction?
+	int32 Crossed(float fromDistance, float toDistance, float splineLength, bool crossedSplineStart) const;
+
+	// Has this checkpoint been crossed, and if so in which direction?
+	int32 Crossed(float fromDistance, float toDistance, float splineLength, bool crossedSplineStart, const FVector& fromLocation, const FVector& toLocation, bool ignoreCheckpointSize) const;
+
+#pragma endregion VehicleRaceDistance
+
 };

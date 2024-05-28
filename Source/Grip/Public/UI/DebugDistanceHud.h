@@ -25,4 +25,12 @@ class ADebugDistanceHUD : public ADebugHUD
 	GENERATED_BODY()
 
 public:
+
+#pragma region VehicleRaceDistance
+
+	// Draw the HUD.
+	virtual void DrawHUD() override;
+
+#pragma endregion VehicleRaceDistance
+
 };
