@@ -229,6 +229,102 @@ void ABaseVehicle::UpdateAI(float deltaSeconds)
 
 #pragma endregion AIVehicleControl
 
+#pragma region VehicleBoost
+
+		if (HasAIDriver() == true)
+		{
+			// AI is actually driving at this point, so do something with the boost if we have to.
+
+			bool boosting = Propulsion.AutoBoostState == EAutoBoostState::Discharging;
+
+			if (boosting == true)
+			{
+				// Should we turn boost off?
+
+				if (AI.DrivingMode == EVehicleAIDrivingMode::JTurnToReorient)
+				{
+					if (AI.ReorientationStage != 0)
+					{
+						BoostOff(false);
+					}
+				}
+				else if ((Control.ThrottleInput <= 0.0f) ||
+					(Control.BrakePosition != 0.0f) ||
+					(AI.Fishtailing == true) ||
+					(AI.DrivingMode != EVehicleAIDrivingMode::GeneralManeuvering))
+				{
+					BoostOff(false);
+				}
+				else
+				{
+					// Why were we boosting? To reach minimum speed or for straight glory?
+
+					if (AI.BoostForMinimumSpeed == true)
+					{
+						// If minimum speed then come off the boost when we've exceeded that by a bit.
+
+						if (AI.MinimumSpeed == 0.0f || GetSpeedKPH() > AI.MinimumSpeed + 50.0f)
+						{
+							BoostOff(false);
+						}
+					}
+					else
+					{
+						// If for straight glory then come off the boost when we're running low.
+
+						if ((Propulsion.AutoBoost < 0.1f) &&
+							(AI.MinimumSpeed == 0.0f || GetSpeedKPH() >= AI.MinimumSpeed))
+						{
+							BoostOff(false);
+						}
+					}
+				}
+			}
+			else
+			{
+				float speed = GetSpeedKPH();
+
+				// Should we turn boost on?
+
+				if ((Control.ThrottleInput > 0.0f) &&
+					(Control.BrakePosition == 0.0f) &&
+					(AI.Fishtailing == false) &&
+					(AI.DrivingMode == EVehicleAIDrivingMode::GeneralManeuvering) &&
+					(IsPracticallyGrounded() == true) &&
+					(speed > 150.0f || (speed > 50.0f && FMath::Abs(Control.SteeringPosition) < GRIP_STEERING_PURPOSEFUL)))
+				{
+					if (AI.MinimumSpeed != 0.0f &&
+						Propulsion.AutoBoost > 0.1f &&
+						speed < AI.MinimumSpeed)
+					{
+						// Hit the boost if we need it right now.
+
+						AI.BoostForMinimumSpeed = true;
+
+						BoostOn(false);
+					}
+					else if (Propulsion.AutoBoost > 0.5f &&
+						AI.IsDrivingCasually() == true &&
+						AI.RouteFollower.IsValid() == true)
+					{
+					}
+				}
+
+				boosting = Propulsion.AutoBoostState == EAutoBoostState::Discharging;
+
+				if (boosting == false &&
+					AI.DrivingMode == EVehicleAIDrivingMode::JTurnToReorient &&
+					AI.ReorientationStage == 0)
+				{
+					AI.BoostForMinimumSpeed = false;
+
+					BoostOn(false);
+				}
+			}
+		}
+
+#pragma endregion VehicleBoost
+
 		// Update the variables used for spline weaving and speed variation.
 
 		AI.UpdateSplineFollowing(deltaSeconds, GetSpeedKPH());

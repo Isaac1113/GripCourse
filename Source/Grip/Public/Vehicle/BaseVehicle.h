@@ -1842,6 +1842,29 @@ public:
 
 #pragma endregion SpeedPads
 
+#pragma region VehicleBoost
+
+private:
+
+	// Update the boosting of the vehicle.
+	void UpdateBoost(float deltaSeconds);
+
+	// Engage the vehicle boost.
+	void BoostDown()
+	{ BoostOn(false); }
+
+	// Disengage the vehicle boost.
+	void BoostUp()
+	{ BoostOff(false); }
+
+	// Set the use of boost to be on.
+	void BoostOn(bool force);
+
+	// Set the use of boost to be off.
+	void BoostOff(bool force);
+
+#pragma endregion VehicleBoost
+
 #pragma region PickupsAvailable
 
 public:

@@ -514,6 +514,32 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 			float longitudinalSlip = wheel.LongitudinalSlip;
 			float longitudinalGripCoefficient = TireFrictionModel->LongitudinalGripCoefficient;
 
+#pragma region VehicleLowSpeedHandling
+
+			if (GetSpeedKPH() < 50.0f &&
+				FMath::Abs(Control.ThrottleInput) < 0.01f)
+			{
+				// Apply the brake if we're going pretty slow and are not attempting to use the throttle.
+				// This brings the vehicle to a nice, natural halt and avoids very low speed handling issues.
+
+				fakeBrake = true;
+
+				// Limit the longitudinal slip, the more horizontally flat we are the more slip we'll receive.
+
+				float angleScale = FMath::Pow(FMath::Abs(zdirection.Z), 2.0f);
+
+				if (brakePosition > 0.0f)
+				{
+					longitudinalSlip = FMath::Max(FMath::Abs(longitudinalSlip), 0.01f * angleScale) * FMathEx::UnitSign(longitudinalSlip);
+				}
+				else
+				{
+					longitudinalSlip = 0.01f * angleScale;
+				}
+			}
+
+#pragma endregion VehicleLowSpeedHandling
+
 			Physics.CentralizeGrip = false;
 
 #pragma region VehiclePhysicsTweaks
@@ -584,6 +610,19 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 
 			// We have to kill lateral grip when the wheels aren't rotating, so rpsReduction is 1
 			// for full reduction and 0 for no reduction. Otherwise, you'd never be able to do a handbrake turn.
+
+#pragma region VehicleLowSpeedHandling
+
+			if (rpsReduction > SMALL_NUMBER)
+			{
+				// At exceedingly low speeds, drop the steering vector in favor of the overall vehicle
+				// side vector which is less susceptible to mathematical inaccuracy.
+
+				wyNormalized = FMath::Lerp(wyNormalized, GetSideDirection(), rpsReduction);
+				wyNormalized.Normalize();
+			}
+
+#pragma endregion VehicleLowSpeedHandling
 
 			float lateralSlip = 0.0f;
 			FVector lateralAxis = wyNormalized;
@@ -778,7 +817,33 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 #pragma endregion VehiclePhysicsTweaks
 
 					{
-						wheelForce += lateralForceVector;
+
+#pragma region VehicleLowSpeedHandling
+
+						// At slow speeds and high angles from the horizontal we account for the correct offset of grip application more.
+						// This has us falling off walls realistically rather than having mental grip. We don't do this all of the time as
+						// you might expect because the vehicle constantly falls all over itself with the weight transfer.
+
+						float angleScale = 1.0f - FMath::Abs(GetLaunchDirection().Z);
+						float speedScale = 1.0f - FMathEx::GetRatio(GetSpeedKPH(), 150.0f, 250.0f);
+						float offsetRatio = speedScale * angleScale;
+						FVector surfacePosition = wheel.Location + wheel.Radius * GetSurfaceDirection();
+
+						check(FMath::IsNaN(angleScale) == false);
+						check(FMath::IsNaN(speedScale) == false);
+						check(FMath::IsNaN(offsetRatio) == false);
+
+						if (offsetRatio > 0.01f)
+						{
+							VehicleMesh->AddForceAtLocationSubstep(lateralForceVector, FMath::Lerp(wheel.Location, surfacePosition, offsetRatio));
+						}
+						else
+						{
+							wheelForce += lateralForceVector;
+						}
+
+#pragma endregion VehicleLowSpeedHandling
+
 					}
 				}
 			}

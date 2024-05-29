@@ -199,6 +199,13 @@ void ABaseVehicle::SetupPlayerInputComponent(UInputComponent* inputComponent)
 
 #pragma endregion VehicleControls
 
+#pragma region VehicleBoost
+
+		inputComponent->BindAction("Boost", IE_Pressed, this, &ABaseVehicle::BoostDown);
+		inputComponent->BindAction("Boost", IE_Released, this, &ABaseVehicle::BoostUp);
+
+#pragma endregion VehicleBoost
+
 #pragma region VehicleSpringArm
 
 		inputComponent->BindAxis("LookForwards", this, &ABaseVehicle::LookForwards);
@@ -698,6 +705,12 @@ void ABaseVehicle::Tick(float deltaSeconds)
 #pragma endregion VehicleLaunch
 
 	UpdateIdleLock();
+
+#pragma region VehicleBoost
+
+	UpdateBoost(deltaSeconds);
+
+#pragma endregion VehicleBoost
 
 	AI.LastVehicleContacts = AI.VehicleContacts;
 	AI.LastCollisionBlockage = AI.CollisionBlockage;
@@ -1734,6 +1747,26 @@ void ABaseVehicle::UpdatePowerAndGearing(float deltaSeconds, const FVector& xdir
 		Propulsion.CurrentJetEnginePower = FMath::Lerp(lowPower, (IsAirborne() == true) ? Propulsion.MaxJetEnginePowerAirborne : maxJetEnginePower, FMath::Pow(FMath::Max(currentGearPosition, 0.0f), 1.5f));
 
 		float j0 = Propulsion.CurrentJetEnginePower;
+
+#pragma region VehicleBoost
+
+		if (Propulsion.AutoBoostState == EAutoBoostState::Discharging)
+		{
+			// Add in extra boost if we're boosting.
+
+			float baseBoost = 0.25f;
+
+			if (RaceState.BoostCatchupRatio > 0.0f)
+			{
+				// Only ever reduce boost if in front, don't increase it if we're behind as it's too aggressive.
+
+				baseBoost *= 1.0f + (RaceState.BoostCatchupRatio * -0.2f);
+			}
+
+			Propulsion.CurrentJetEnginePower += j0 * baseBoost;
+		}
+
+#pragma endregion VehicleBoost
 
 		// So now we've got all the engine power calculated, let's manage the gearing simulation.
 
@@ -4056,6 +4089,12 @@ void ABaseVehicle::Teleport(FRouteFollower& routeFollower, FVector location, FRo
 
 #pragma endregion VehicleSpringArm
 
+#pragma region VehicleBoost
+
+		BoostOff(true);
+
+#pragma endregion VehicleBoost
+
 		if (GRIP_POINTER_VALID(AI.RouteFollower.ThisSpline) == true)
 		{
 			TWeakObjectPtr<UPursuitSplineComponent> thisSpline = AI.RouteFollower.ThisSpline;
@@ -4081,6 +4120,158 @@ void ABaseVehicle::Teleport(FRouteFollower& routeFollower, FVector location, FRo
 }
 
 #pragma endregion VehicleTeleport
+
+#pragma region VehicleBoost
+
+/**
+* Update the boosting of the vehicle.
+***********************************************************************************/
+
+void ABaseVehicle::UpdateBoost(float deltaSeconds)
+{
+	if (PlayGameMode->PastGameSequenceStart() == true)
+	{
+		if (Propulsion.AutoBoostState == EAutoBoostState::Charging)
+		{
+			// Slow the adjustment of the charging if we're leading, the adjustment is based upon how much we're leading.
+
+			float scale = (RaceState.BoostCatchupRatio > 0.0f) ? 0.5f : 0.25f;
+
+			Propulsion.AutoBoostShake -= deltaSeconds;
+			Propulsion.AutoBoostShake = FMath::Max(0.0f, Propulsion.AutoBoostShake);
+
+			float antigravityScale = 1.0f;
+
+			Propulsion.AutoBoost += deltaSeconds * antigravityScale * 0.05f * (1.0f - (RaceState.BoostCatchupRatio * scale));
+
+			if (Propulsion.AutoBoost >= 1.0f)
+			{
+				Propulsion.AutoBoost = 1.0f;
+			}
+
+			if (Propulsion.AutoBoostVolume > 0.0f)
+			{
+				Propulsion.AutoBoostVolume = FMath::Max(0.0f, Propulsion.AutoBoostVolume - deltaSeconds);
+
+				if (EngineBoostAudio != nullptr)
+				{
+					EngineBoostAudio->SetVolumeMultiplier(Propulsion.AutoBoostVolume * GlobalVolume);
+				}
+			}
+		}
+		else if (Propulsion.AutoBoostState == EAutoBoostState::Discharging)
+		{
+			if (EngineBoostAudio != nullptr)
+			{
+				EngineBoostAudio->SetVolumeMultiplier(GlobalVolume);
+			}
+
+			float antigravityScale = 1.0f;
+
+			Propulsion.AutoBoost -= deltaSeconds * antigravityScale * 0.2f;
+			Propulsion.AutoBoostShake += deltaSeconds;
+			Propulsion.AutoBoostShake = FMath::Min(1.0f, Propulsion.AutoBoostShake);
+
+			if (Propulsion.AutoBoost < 0.0f)
+			{
+				Propulsion.AutoBoost = 0.0f;
+
+				BoostOff(false);
+			}
+		}
+	}
+}
+
+/**
+* Set the use of boost to be on.
+***********************************************************************************/
+
+void ABaseVehicle::BoostOn(bool force)
+{
+	if ((Propulsion.AutoBoostState == EAutoBoostState::Charging) &&
+		(force == true || Propulsion.AutoBoost > 0.17f))
+	{
+		Propulsion.AutoBoostState = EAutoBoostState::Discharging;
+
+		GearUpEngaged();
+
+		if (VehicleAudio != nullptr &&
+			EngineBoostAudio->Sound == nullptr)
+		{
+			EngineBoostAudio->SetSound(VehicleAudio->EngineBoostSound);
+		}
+
+		EngineBoostAudio->SetVolumeMultiplier(GlobalVolume);
+		GRIP_PLAY_IF_NOT_PLAYING(EngineBoostAudio);
+
+		BoostEffectComponents.Empty();
+
+		if (BoostEffectBoneNames.Num() == 0)
+		{
+			BoostEffectComponents.Emplace(UGameplayStatics::SpawnEmitterAttached(BoostLoopEffect, VehicleMesh, "RootDummy", FVector(0.0f, 0.0f, 0.0f)));
+		}
+		else
+		{
+			for (FName& name : BoostEffectBoneNames)
+			{
+				BoostEffectComponents.Emplace(UGameplayStatics::SpawnEmitterAttached(BoostLoopEffect, VehicleMesh, name, FVector(0.0f, 0.0f, 0.0f)));
+			}
+		}
+
+		for (UParticleSystemComponent* component : BoostEffectComponents)
+		{
+			if (GRIP_OBJECT_VALID(component) == true)
+			{
+				component->SetOwnerNoSee(IsCockpitView());
+			}
+		}
+	}
+}
+
+/**
+* Set the use of boost to be off.
+***********************************************************************************/
+
+void ABaseVehicle::BoostOff(bool force)
+{
+	if (Propulsion.AutoBoostState == EAutoBoostState::Discharging)
+	{
+		Propulsion.AutoBoostState = EAutoBoostState::Charging;
+		Propulsion.AutoBoostVolume = 1.0f;
+
+		for (UParticleSystemComponent* component : BoostEffectComponents)
+		{
+			if (GRIP_OBJECT_VALID(component) == true)
+			{
+				component->Deactivate();
+			}
+		}
+
+		BoostEffectComponents.Empty();
+
+		if (BoostEffectBoneNames.Num() == 0)
+		{
+			BoostEffectComponents.Emplace(UGameplayStatics::SpawnEmitterAttached(BoostStopEffect, VehicleMesh, "RootDummy", FVector(0.0f, 0.0f, 0.0f)));
+		}
+		else
+		{
+			for (FName& name : BoostEffectBoneNames)
+			{
+				BoostEffectComponents.Emplace(UGameplayStatics::SpawnEmitterAttached(BoostStopEffect, VehicleMesh, name, FVector(0.0f, 0.0f, 0.0f)));
+			}
+		}
+
+		for (UParticleSystemComponent* component : BoostEffectComponents)
+		{
+			if (GRIP_OBJECT_VALID(component) == true)
+			{
+				component->SetOwnerNoSee(IsCockpitView());
+			}
+		}
+	}
+}
+
+#pragma endregion VehicleBoost
 
 #pragma region VehicleSpringArm
 
