@@ -2365,4 +2365,342 @@ FRotator UPursuitSplineComponent::GetCurvatureOverDistance(float distance, float
 
 #pragma endregion AIVehicleControl
 
+#pragma region VehicleTeleport
+
+/**
+* Rewind the follower to safe ground - normally used when teleporting a vehicle.
+***********************************************************************************/
+
+bool FRouteFollower::RewindToSafeGround(float rewindDistance, float& initialSpeed, bool reset)
+{
+	if (reset == true)
+	{
+		NumRewindBranches = 0;
+	}
+	else
+	{
+		NumRewindBranches++;
+	}
+
+	if (GRIP_POINTER_VALID(ThisSpline) == true)
+	{
+		float distance = ThisDistance;
+
+		DecidedDistance = -1.0f;
+
+		UE_LOG(GripTeleportationLog, Log, TEXT("Rewind distance is %d"), (int32)rewindDistance);
+		UE_LOG(GripTeleportationLog, Log, TEXT("Rewind from spline %s at distance %d"), *ThisSpline->ActorName, (int32)ThisDistance);
+
+		ThisDistance = ThisDistance - (rewindDistance * 100.0f);
+
+		if (ThisSpline->IsClosedLoop() == true)
+		{
+			ThisDistance = ThisSpline->ClampDistance(ThisDistance);
+		}
+
+		if (ThisDistance < 0.0f ||
+			ThisSpline->RewindToSafeGround(ThisDistance, initialSpeed) == false)
+		{
+			if (ThisDistance < 0.0f)
+			{
+				UE_LOG(GripTeleportationLog, Log, TEXT("Rewind failed because the rewind distance is before the beginning of the spline"));
+			}
+			else
+			{
+				UE_LOG(GripTeleportationLog, Log, TEXT("Rewind failed"));
+			}
+
+			if (NumRewindBranches < 5)
+			{
+				// Runaway iteration check.
+
+				ThisDistance = distance;
+
+				if (ThisSpline->SplineLinks.Num() > 0)
+				{
+					// Find the first backward link that is in front of our distance, then iterate back to the one prior.
+					// They will have been sorted at creation on ThisDistance.
+
+					int32 i = 0;
+
+					for (; i < ThisSpline->SplineLinks.Num(); i++)
+					{
+						FSplineLink& link = ThisSpline->SplineLinks[i];
+
+						// Look for splines that flow onto this one, because that means we can run back down along them.
+
+						if (link.ForwardLink == false &&
+							link.ThisDistance > ThisDistance)
+						{
+							// Go back one branch to land behind ThisDistance.
+
+							if (--i < 0)
+							{
+								i += ThisSpline->SplineLinks.Num();
+							}
+
+							break;
+						}
+					}
+
+					// If no splines were found to be in front, then all must be behind so choose the last one.
+
+					i = FMath::Min(i, ThisSpline->SplineLinks.Num() - 1);
+
+					int32 first = i;
+
+					do
+					{
+						FSplineLink& link = ThisSpline->SplineLinks[i];
+
+						// Look for splines that flow onto this one, because that means we can run back down along them.
+
+						if (link.ForwardLink == false)
+						{
+							TWeakObjectPtr<UPursuitSplineComponent> thisSpline = ThisSpline;
+							float thisDistance = ThisDistance;
+							float thisRewindDistance = FMath::Max(0.0f, rewindDistance - FMath::Max(0.0f, thisDistance - link.ThisDistance));
+
+							// Use the new splines at its join distance and start to rewind down that.
+
+							ThisSpline = link.Spline;
+							ThisDistance = link.NextDistance;
+
+							if (RewindToSafeGround(thisRewindDistance, initialSpeed, false) == true)
+							{
+								SwitchingSpline = false;
+
+								LastSpline = thisSpline;
+								LastDistance = thisDistance;
+
+								NumRewindBranches--;
+
+								return true;
+							}
+
+							ThisSpline = thisSpline;
+							ThisDistance = thisDistance;
+						}
+
+						if (--i < 0)
+						{
+							i += ThisSpline->SplineLinks.Num();
+						}
+					}
+					while (i != first);
+				}
+			}
+		}
+		else
+		{
+			NextSpline = ThisSpline;
+			NextDistance = ThisDistance;
+
+			NumRewindBranches--;
+
+			return true;
+		}
+	}
+
+	NumRewindBranches--;
+
+	return false;
+}
+
+/**
+* Rewind a distance to safe ground if possible.
+***********************************************************************************/
+
+bool UPursuitSplineComponent::RewindToSafeGround(float& distance, float& initialSpeed)
+{
+	initialSpeed = 100.0f;
+
+	if (PursuitSplineParent->PointExtendedData.Num() < 2)
+	{
+		return true;
+	}
+
+	int32 thisKey = 0;
+	int32 nextKey = 0;
+	float ratio = 0.0f;
+	TArray<FPursuitPointExtendedData>& pursuitPointExtendedData = PursuitSplineParent->PointExtendedData;
+
+	UE_LOG(GripTeleportationLog, Log, TEXT("Looking for level ground from %d on spline %s"), (int32)distance, *ActorName);
+
+	GetExtendedPointKeys(distance, thisKey, nextKey, ratio);
+
+	thisKey = nextKey;
+
+	// All we care about here is pitch curvature, making sure we don't try to make a very hard vertical turn.
+
+	do
+	{
+		FPursuitPointExtendedData& p0 = pursuitPointExtendedData[thisKey];
+		float minCurvatureLength = 250.0f;
+		float curvatureLength = minCurvatureLength * 100.0f;
+		FRotator curvature = GetCurvatureOverDistance(p0.Distance, curvatureLength, 1, FQuat::Identity, false);
+
+		if (curvature.Pitch < 25.0f)
+		{
+			// OK, so we have some manageable vertical curvature.
+
+			float continuousLength = minCurvatureLength * 100.0f;
+
+			if (GetContinuousSurfaceOverDistance(p0.Distance, continuousLength, 1) == true)
+			{
+				// And it doesn't swap driving surfaces.
+
+				UE_LOG(GripTeleportationLog, Log, TEXT("Found good ground at %d"), (int32)p0.Distance);
+
+				distance = p0.Distance;
+
+				// Add in an adjustment to the speed to take into account upward curvature.
+
+				if (curvature.Pitch > 0.0f)
+				{
+					float boost = FMath::Min(50.0f, curvature.Pitch) * 8.0f;
+
+					UE_LOG(GripTeleportationLog, Log, TEXT("Added %d kph for upward curvature"), (int32)boost);
+
+					initialSpeed += boost;
+				}
+
+				FRotator rotation = GetQuaternionAtDistanceAlongSpline(distance, ESplineCoordinateSpace::World).Rotator();
+
+				if (rotation.Pitch > 0.0f)
+				{
+					// Scale up to 400kph when reaching up to 15 degrees incline or more.
+
+					float boost = (FMath::Min(rotation.Pitch, 15.0f) / 15.0f) * 400.0f;
+
+					UE_LOG(GripTeleportationLog, Log, TEXT("Setting minimum of %d kph for upward incline"), (int32)boost);
+
+					initialSpeed = FMath::Max(initialSpeed, boost);
+				}
+
+				float overDistance = FMathEx::KilometersPerHourToCentimetersPerSecond(initialSpeed) * 2.0f;
+				float minimumSpeed = FMath::Min(500.0f, GetMinimumSpeedOverDistance(distance, overDistance, 1));
+
+				overDistance = FMathEx::KilometersPerHourToCentimetersPerSecond(initialSpeed) * 2.0f;
+				float optimumSpeed = GetMinimumOptimumSpeedOverDistance(distance, overDistance, 1);
+
+				if (minimumSpeed > KINDA_SMALL_NUMBER)
+				{
+					initialSpeed = FMath::Max(initialSpeed, minimumSpeed);
+				}
+
+				if (optimumSpeed > KINDA_SMALL_NUMBER)
+				{
+					initialSpeed = FMath::Min(initialSpeed, optimumSpeed);
+				}
+
+				FVector difference = GetWorldClosestPosition(distance) - GetWorldLocationAtDistanceAlongSpline(distance);
+
+				difference.Normalize();
+
+				// difference is now the direction of the ground in world space.
+				// Scale speed with ground orientation.
+
+				initialSpeed = FMath::Max(initialSpeed, FMath::Lerp(100.0f, 350.0f, FMathEx::NegativePow((difference.Z * 0.5f) + 0.5f, 0.5f)));
+
+				return true;
+			}
+		}
+
+		if (--thisKey < 0)
+		{
+			if (IsClosedLoop() == false)
+			{
+				break;
+			}
+
+			thisKey += pursuitPointExtendedData.Num();
+		}
+	}
+	while (thisKey != nextKey);
+
+	UE_LOG(GripTeleportationLog, Log, TEXT("Gave up looking for level ground"));
+
+	return false;
+}
+
+/**
+* Get the continuous surface of the spline over distance.
+***********************************************************************************/
+
+bool UPursuitSplineComponent::GetContinuousSurfaceOverDistance(float distance, float& overDistance, int32 direction) const
+{
+	bool continuous = true;
+
+	TArray<FPursuitPointExtendedData>& pursuitPointExtendedData = PursuitSplineParent->PointExtendedData;
+
+	if (pursuitPointExtendedData.Num() < 2)
+	{
+		return continuous;
+	}
+
+	float endDistance = distance + (overDistance * direction);
+
+	if (IsClosedLoop() == false)
+	{
+		endDistance = ClampDistance(endDistance);
+		overDistance -= FMath::Abs(endDistance - distance);
+	}
+	else
+	{
+		overDistance = 0.0f;
+	}
+
+	int32 thisKey = 0;
+	int32 nextKey = 0;
+	float ratio = 0.0f;
+
+	GetExtendedPointKeys(distance, thisKey, nextKey, ratio);
+
+	int32 key0 = (direction < 0) ? nextKey : thisKey;
+
+	GetExtendedPointKeys(endDistance, thisKey, nextKey, ratio);
+
+	int32 key1 = (direction < 0) ? thisKey : nextKey;
+	int32 numKeys = pursuitPointExtendedData.Num();
+
+	for (int32 i = key0; i != key1;)
+	{
+		FPursuitPointExtendedData& p0 = pursuitPointExtendedData[i];
+		FPursuitPointExtendedData& p1 = pursuitPointExtendedData[FMath::Clamp(i + direction, 0, numKeys - 1)];
+
+		float degrees = FPursuitPointExtendedData::DifferenceInDegrees(p0.UseGroundIndex, p1.UseGroundIndex);
+
+		if (degrees > 45.0f ||
+			p0.EnvironmentDistances[p0.UseGroundIndex] < 0.0f ||
+			p0.EnvironmentDistances[p0.UseGroundIndex] > 25.0f * 100.0f)
+		{
+			// If the change in degrees is too rapid or the nearest surface is more than 25 meters away,
+			// then this isn't a continuous surface.
+
+			continuous = false;
+			break;
+		}
+
+		if (direction < 0)
+		{
+			if (--i < 0)
+			{
+				i = numKeys - 1;
+			}
+		}
+		else
+		{
+			if (++i == numKeys)
+			{
+				i = 0;
+			}
+		}
+	}
+
+	return continuous;
+}
+
+#pragma endregion VehicleTeleport
+
 #pragma endregion NavigationSplines

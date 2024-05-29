@@ -476,7 +476,15 @@ FLinearColor UHUDWidgetComponent::GetLaunchChargeColour() const
 
 float UHUDWidgetComponent::GetResetChargeLevel() const
 {
-	return 0.0f;
+
+#pragma region VehicleTeleport
+
+	ABaseVehicle* vehicle = GetTargetVehicle();
+
+	return (vehicle != nullptr) ? vehicle->GetTeleportChargeLevel() : 0.0f;
+
+#pragma endregion VehicleTeleport
+
 }
 
 /**
@@ -485,7 +493,15 @@ float UHUDWidgetComponent::GetResetChargeLevel() const
 
 FLinearColor UHUDWidgetComponent::GetResetChargeColour() const
 {
-	return FLinearColor(0.0f, 0.0f, 0.0f, 0.0f);
+
+#pragma region VehicleTeleport
+
+	ABaseVehicle* vehicle = GetTargetVehicle();
+
+	return (vehicle != nullptr) ? vehicle->GetTeleportChargeColor() : FLinearColor(1.0f, 0.0f, 0.0f, 1.0f);
+
+#pragma endregion VehicleTeleport
+
 }
 
 /**
@@ -735,7 +751,11 @@ TArray<FHUDRacePosition> UHUDWidgetComponent::GetRacePositions(float centre, flo
 				position.IsUsingDisruptor = false;
 				position.Colour = PlayGameMode->GetTeamColour(-1);
 
-				float teleportRatio = 0.0f;
+#pragma region VehicleTeleport
+
+				float teleportRatio = vehicle->GetTeleportResidue(3.0f);
+
+#pragma endregion VehicleTeleport
 
 				position.Colour = FMath::Lerp(FLinearColor(1.0f, 0.33f, 0.0f, 1.0f), position.Colour, teleportRatio * teleportRatio * teleportRatio);
 

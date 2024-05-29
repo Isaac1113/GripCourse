@@ -351,6 +351,16 @@ public:
 
 #pragma endregion AIVehicleControl
 
+#pragma region VehicleTeleport
+
+	// Rewind the follower to safe ground - normally used when teleporting a vehicle.
+	bool RewindToSafeGround(float rewindDistance, float& initialSpeed, bool reset = true);
+
+	// The number of branches we have rewound over when calculating a route.
+	int32 NumRewindBranches = 0;
+
+#pragma endregion VehicleTeleport
+
 };
 
 #pragma endregion NavigationSplines
@@ -601,6 +611,18 @@ public:
 	FVector GetWorldClosestOffset(float distance, bool raw = false) const;
 
 #pragma endregion AINavigation
+
+#pragma region VehicleTeleport
+
+public:
+
+	//Get the continuous surface of the spline over distance.
+	bool GetContinuousSurfaceOverDistance(float distance, float& overDistance, int32 direction) const;
+
+	// Rewind a distance to safe ground if possible.
+	bool RewindToSafeGround(float& distance, float& initialSpeed);
+
+#pragma endregion VehicleTeleport
 
 #pragma region AIVehicleControl
 

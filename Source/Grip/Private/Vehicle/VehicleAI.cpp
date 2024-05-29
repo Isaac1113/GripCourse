@@ -293,6 +293,13 @@ void ABaseVehicle::UpdateAI(float deltaSeconds)
 	if (gameStartedForThisVehicle == true)
 	{
 		AIRecordVehicleProgress(transform, movement, direction, deltaSeconds);
+
+#pragma region VehicleTeleport
+
+		AITeleportIfStuck();
+
+#pragma endregion VehicleTeleport
+
 	}
 
 #pragma endregion AIVehicleControl
@@ -542,6 +549,20 @@ void ABaseVehicle::AIFollowSpline(const FVector& location, const FVector& wasHea
 			float lastDistance = RaceState.DistanceAlongMasterRacingSpline;
 
 			RaceState.DistanceAlongMasterRacingSpline = AI.RouteFollower.ThisSpline->GetMasterDistanceAtDistanceAlongSpline(AI.RouteFollower.ThisDistance, PlayGameMode->MasterRacingSplineLength);
+
+#pragma region VehicleTeleport
+
+			if (FMath::Abs(PlayGameMode->MasterRacingSpline->GetDistanceDifference(lastDistance, RaceState.DistanceAlongMasterRacingSpline)) > 250.0f * 100.0f)
+			{
+				if (IsTeleporting() == true &&
+					Teleportation.Forced == true)
+				{
+					RaceState.DistanceAlongMasterRacingSpline = lastDistance;
+				}
+			}
+
+#pragma endregion VehicleTeleport
+
 		}
 
 		if (IsPracticallyGrounded(100.0f) == true)
@@ -2152,3 +2173,163 @@ void ABaseVehicle::AIPerformRollControl(float relativeRollTarget, float rollTarg
 }
 
 #pragma endregion AIVehicleRollControl
+
+#pragma region VehicleTeleport
+
+/**
+* If the car is stuck then just teleport back onto the track.
+***********************************************************************************/
+
+bool ABaseVehicle::AITeleportIfStuck()
+{
+	// We haven't teleported for ten seconds or more.
+
+	float timeWindow = 10.0f;
+
+	if (Teleportation.Action == 0)
+	{
+		if (RaceState.RaceTime > 10.0f &&
+			VehicleClock - Teleportation.RecoveredAt > 10.0f &&
+			Clock0p25.ShouldTickNow() == true)
+		{
+			bool jammedInTheWorld =
+				// We've not got any real speed.
+				GetSpeedKPH() < 10.0f &&
+				// Mostly trying to use thrust.
+				AI.Thrust.GetAbsMeanValue(VehicleClock - 5.0f) > 0.75f;
+
+			bool fellThroughTheWorld = (Physics.ContactData.FallingTime > 10.0f);
+
+			bool cantGetAnywhere =
+				// Not spinning wheels on the start line.
+				(StandingStart == false || StandingRestart == true) &&
+				// We've not got any real speed.
+				GetSpeedKPH() < 50.0f &&
+				// Mostly trying to use thrust.
+				AI.Thrust.GetAbsMeanValue(VehicleClock - timeWindow) > 0.75f;
+
+			bool tbonedAndBlocking =
+				GetSpeedKPH() < 100.0f &&
+				IsPracticallyGrounded() == true &&
+				GameState->IsGameModeRace() == true &&
+				FMath::Abs(Physics.VelocityData.AngularVelocity.Z) < 50.0f &&
+				FMath::Abs(FVector::DotProduct(GetSideDirection(), AI.SplineWorldDirection)) > 0.75f &&
+				(AI.VehicleContacts & (VehicleBlockedLeft | VehicleBlockedRight)) != 0;
+
+			float min = AI.RaceDistances.GetMinValue(VehicleClock - timeWindow);
+			float max = AI.RaceDistances.GetMaxValue(VehicleClock - timeWindow);
+
+			// Find the forward distance traveled in the last 15 seconds.
+
+			float forward = AI.ForwardDistanceTraveled.GetSumValue(VehicleClock - timeWindow);
+
+			// Find the backward distance traveled in the last 15 seconds.
+
+			float backward = AI.BackwardDistanceTraveled.GetSumValue(VehicleClock - timeWindow);
+
+			if (GameState->IsGameModeRace() == true)
+			{
+				if (GetGameEndedClock() > 0.0f)
+				{
+					// Made less than 15 meters forwards progress.
+
+					cantGetAnywhere &= FMath::Abs(forward - backward) < 15.0f * 100.0f;
+
+					// Made less than 10 meters forwards progress.
+
+					jammedInTheWorld &= FMath::Abs(forward - backward) < 10.0f * 100.0f;
+				}
+				else if (min == 0.0f && max == 0.0f)
+				{
+					cantGetAnywhere = jammedInTheWorld = false;
+				}
+				else
+				{
+					// Made less than 25 meters progress along the track.
+
+					cantGetAnywhere &= AI.RouteFollower.IsValid() == true && (max - min) < 25.0f * 100.0f;
+
+					// Made less than 10 meters progress along the track.
+
+					jammedInTheWorld &= AI.RouteFollower.IsValid() == true && (max - min) < 10.0f * 100.0f;
+				}
+			}
+
+			bool teleport = fellThroughTheWorld;
+
+#if !WITH_EDITOR
+
+			teleport |= (IsVehicleOffTrack(true) == true);
+
+#endif // !WITH_EDITOR
+
+			if (AI.BotDriver == true)
+			{
+				teleport |= jammedInTheWorld | cantGetAnywhere | tbonedAndBlocking;
+			}
+
+			if (teleport == true)
+			{
+				BeginTeleport();
+
+				return true;
+			}
+		}
+		else
+		{
+			bool teleport = false;
+
+#if !WITH_EDITOR
+
+			teleport |= (IsVehicleOffTrack(true) == true);
+
+#endif // !WITH_EDITOR
+
+			if (teleport == true)
+			{
+				BeginTeleport();
+
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+/**
+* Reset the object after a teleport has taken place.
+***********************************************************************************/
+
+void FVehicleAI::TeleportReset(const FVector& location)
+{
+	LastLocation = location;
+
+	DistanceFromPursuitSpline = 0.0f;
+	PursuitSplineWidthTime = 0.0f;
+	ResetPursuitSplineWidthOffset = true;
+	PursuitSplineWidthOffset = 0.0f;
+	SmoothedPursuitSplineWidthOffset = 0.0f;
+	DrivingMode = EVehicleAIDrivingMode::GeneralManeuvering;
+	DrivingModeTime = 0.0f;
+	OutsideSplineCount = 0.0f;
+	LockSteeringToSplineDirection = false;
+	LockSteeringAvoidStaticObjects = false;
+
+#pragma region AIAttraction
+
+	AttractedTo = nullptr;
+	AttractedToActor = nullptr;
+
+#pragma endregion AIAttraction
+
+	Thrust.Clear();
+	Speed.Clear();
+	ForwardSpeed.Clear();
+	BackwardSpeed.Clear();
+	ForwardDistanceTraveled.Clear();
+	BackwardDistanceTraveled.Clear();
+	YawDirectionVsVelocity.Clear();
+}
+
+#pragma endregion VehicleTeleport

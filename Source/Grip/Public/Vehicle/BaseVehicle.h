@@ -553,6 +553,50 @@ public:
 
 #pragma endregion VehicleDamage
 
+#pragma region VehicleTeleport
+
+/**
+* A structure to describe the teleportation of a vehicle.
+***********************************************************************************/
+
+struct FVehicleTeleportation
+{
+	// Is this a forced, automatic teleport?
+	bool Forced = false;
+
+	// The current stage of the teleportation.
+	int32 Action = 0;
+
+	// The number of consecutive teleport loops.
+	int32 NumLoops = 0;
+
+	// Timer used to time the teleport input request.
+	float Timer = 0.0f;
+
+	// Timer used to delay the teleportation.
+	float Countdown = 0.0f;
+
+	// The time teleportation was last used.
+	float LastVehicleClock = 0.0f;
+
+	// The time the vehicle was last recovered via teleportation.
+	float RecoveredAt = 0.0f;
+
+	// The initial speed in KPH to teleport to.
+	float InitialSpeed = 0.0f;
+
+	// The location to teleport to.
+	FVector Location = FVector::ZeroVector;
+
+	// The rotation to teleport to.
+	FRotator Rotation = FRotator::ZeroRotator;
+
+	// The route follower used during the teleportation.
+	FRouteFollower RouteFollower;
+};
+
+#pragma endregion VehicleTeleport
+
 /**
 * A small actor class for configuring and attaching canards to antigravity vehicles.
 ***********************************************************************************/
@@ -1645,6 +1689,66 @@ private:
 	FCollisionQueryParams QueryParams = FCollisionQueryParams(TEXT("VehicleSensor"), true, this);
 
 #pragma endregion AINavigation
+
+#pragma region VehicleTeleport
+
+public:
+
+	// Is the vehicle currently teleporting?
+	bool IsTeleporting() const
+	{ return (Teleportation.Action == 2); }
+
+	// Get the charge level of the teleport between 0 and 1.
+	float GetTeleportChargeLevel() const;
+
+	// Get the residue level for the teleportation between 0 and 1.
+	float GetTeleportResidue(float scale = GRIP_TELEPORT_SPAM_PERIOD) const;
+
+	// Get the charge color for the teleportation.
+	FLinearColor GetTeleportChargeColor() const
+	{ return (Teleportation.Action == 3 || TeleportPossible() == true) ? FLinearColor(0.0f, 1.0f, 0.0f, 1.0f) : FLinearColor(1.0f, 0.0f, 0.0f, 1.0f); }
+
+private:
+
+	// Is teleportation currently possible?
+	bool TeleportPossible() const
+	{ return ((HUD.HomingMissileTime == 0.0f || HUD.HomingMissileTime > 0.333f) && (VehicleClock - Teleportation.RecoveredAt > GRIP_TELEPORT_SPAM_PERIOD) && (RaceState.RaceTime > GRIP_TELEPORT_SPAM_PERIOD) && (Teleportation.Action == 0)); }
+
+	// Update the teleportation.
+	void UpdateTeleportation(float deltaSeconds);
+
+	// The controller input to teleport to track is down.
+	void TeleportOn();
+
+	// The controller input to teleport to track is up.
+	void TeleportOff();
+
+	// The controller input to teleport to track is down.
+	void TeleportToTrackDown();
+
+	// The controller input to teleport to track is up.
+	void TeleportToTrackUp();
+
+	// Get the destination for a teleportation from the current location / rotation.
+	void GetTeleportDestination(FVector& location, FRotator& rotation, float& initialSpeed);
+
+	// Set the teleport destination.
+	void SetTeleportDestination(const FVector& location, const FRotator& rotation, float speed);
+
+	// Teleport the vehicle back to the track.
+	void Teleport(FRouteFollower& routeFollower, FVector location, FRotator rotation, float speed, float distanceAlongMasterRacingSpline, float minMatchingDistance);
+
+	// If the vehicle is stuck then just teleport back onto the track.
+	bool AITeleportIfStuck();
+
+	// Reset the AI data on teleport.
+	void AITeleportReset(const FVector& location)
+	{ AI.TeleportReset(location); }
+
+	// The teleportation data.
+	FVehicleTeleportation Teleportation;
+
+#pragma endregion VehicleTeleport
 
 #pragma region AIVehicleControl
 

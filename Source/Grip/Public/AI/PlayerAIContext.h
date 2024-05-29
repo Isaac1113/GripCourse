@@ -386,6 +386,13 @@ public:
 
 #pragma endregion AIAttraction
 
+#pragma region VehicleTeleport
+
+	// Reset the object after a teleport has taken place.
+	void TeleportReset(const FVector& location);
+
+#pragma endregion VehicleTeleport
+
 };
 
 /**
