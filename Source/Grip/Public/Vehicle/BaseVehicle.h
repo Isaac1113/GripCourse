@@ -1597,6 +1597,21 @@ private:
 
 #pragma endregion VehicleSurfaceImpacts
 
+#pragma region VehicleSlowTurningRecovery
+
+private:
+
+	// Update the vehicle disorientation.
+	void UpdateVehicleDisorientation(float deltaSeconds);
+
+	// The timer use for disorientation.
+	float DisorientedTimer = 0.0f;
+
+	// The yaw orbit to apply during disorientation.
+	float DisorientedYaw = 0.0f;
+
+#pragma endregion VehicleSlowTurningRecovery
+
 #pragma region VehicleAudio
 
 public:
@@ -2047,6 +2062,32 @@ private:
 	FVehicleHUD HUD;
 
 #pragma endregion VehicleHUD
+
+#pragma region VehicleAntiGravity
+
+public:
+
+	// Get the hovering instability for a vehicle, based on its mass.
+	float GetHoveringInstability() const
+	{ return (Physics.StockMass - 5000.0f) / 4000.0f; }
+
+	// Get the amount of air power currently available to antigravity vehicles.
+	float GetAirPower() const
+	{ return Propulsion.AirPower; }
+
+	// Noise function for antigravity vehicles, used for adding a low frequency hovering offset to all contact sensors in a unified way.
+	FMathEx::FSineNoise HoverNoise = true;
+
+private:
+
+	// Cut the air power available to antigravity vehicles for a period of time.
+	void CutAirPower(float forSeconds)
+	{ Propulsion.AirPowerCut = FMath::Max(Propulsion.AirPowerCut, forSeconds); Propulsion.AirPower = 0.0f; }
+
+	// Update the forwards and antigravity scaling ratios for antigravity vehicles.
+	void UpdateAntigravityForwardsAndScale(float deltaSeconds, float brakePosition, float& forwardRatio, float& scaleAntigravity);
+
+#pragma endregion VehicleAntiGravity
 
 #pragma region ClocksAndTime
 

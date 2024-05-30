@@ -112,6 +112,27 @@ void ADebugVehicleHUD::DrawHUD()
 				AddLine(vehicle->GetWheelBoneLocationFromIndex(index), wheelPosition - side, FMath::Lerp(FLinearColor::Red, FLinearColor::Green, ratio));
 				AddLine(vehicle->GetWheelBoneLocationFromIndex(index), wheelPosition + side, FMath::Lerp(FLinearColor::Red, FLinearColor::Green, ratio));
 
+#pragma region VehicleAntiGravity
+
+				if (vehicle->Antigravity == true)
+				{
+					AddTextFloatAt(TEXT("LF"), wheel.LateralForceStrength, wheelPosition, -10.0f, -12.0f);
+					AddTextFloatAt(TEXT("NC"), wheel.GetActiveSensor().GetNormalizedCompression(), wheelPosition, -10.0f, -24.0f);
+					AddTextFloatAt(TEXT("AC"), wheel.GetActiveSensor().GetAntigravityNormalizedCompression(), wheelPosition, -10.0f, -36.0f);
+
+					for (FVehicleContactSensor& sensor : wheel.Sensors)
+					{
+						FVector springDirection = sensor.GetDirection();
+
+						AddLine(vehicle->GetWheelBoneLocationFromIndex(index), vehicle->GetWheelBoneLocationFromIndex(index) + (springDirection * sensor.ForceApplied * 0.05f), FLinearColor(1.0f, 0.5f, 0.0f));
+
+						sensor.ForceApplied = 0.0f;
+					}
+				}
+				else
+
+#pragma endregion VehicleAntiGravity
+
 				{
 
 #pragma region VehicleGrip

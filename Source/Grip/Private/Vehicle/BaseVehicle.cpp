@@ -348,6 +348,46 @@ void ABaseVehicle::PostInitializeComponents()
 			FVector standardOffset = FVector(boneOffset.X, boneOffset.Y, 0.0f);
 			FVector suspensionForcesOffset = standardOffset;
 
+#pragma region VehicleAntiGravity
+
+			float canardSteeringAngle = (placement == EWheelPlacement::Front) ? 25.0f : 10.0f;
+			float canardBrakeAngle = (placement == EWheelPlacement::Front) ? 0.0f : 25.0f;
+			float canardRestingAngle = 25.0f;
+			TArray<UActorComponent*> childActors;
+
+			GetComponents(UChildActorComponent::StaticClass(), childActors);
+
+			for (UActorComponent* component : childActors)
+			{
+				UChildActorComponent* child = Cast<UChildActorComponent>(component);
+
+				if (child != nullptr &&
+					child->GetAttachSocketName() == boneName)
+				{
+					ACanard* actor = Cast<ACanard>(child->GetChildActor());
+
+					if (actor != nullptr)
+					{
+						if (placement == EWheelPlacement::Front)
+						{
+							canardSteeringAngle = actor->MaximumSteeringAngleFront;
+							canardBrakeAngle = actor->MaximumBrakingAngleFront;
+							canardRestingAngle = actor->RestingAngleFront;
+						}
+						else
+						{
+							canardSteeringAngle = actor->MaximumSteeringAngleRear;
+							canardBrakeAngle = actor->MaximumBrakingAngleRear;
+							canardRestingAngle = actor->RestingAngleRear;
+						}
+					}
+
+					break;
+				}
+			}
+
+#pragma endregion VehicleAntiGravity
+
 #pragma region VehiclePhysicsTweaks
 
 			// Ensure the contact sensor itself sits half a wheel width in from the original physics asset bounds
@@ -384,7 +424,11 @@ void ABaseVehicle::PostInitializeComponents()
 
 			// Create the wheel from the data we now have.
 
-			FVehicleWheel wheel = FVehicleWheel(boneName, boneOffset, standardOffset, suspensionForcesOffset, placement, assignment.Width, assignment.Radius);
+#pragma region VehicleAntiGravity
+
+			FVehicleWheel wheel = FVehicleWheel(boneName, boneOffset, standardOffset, suspensionForcesOffset, placement, assignment.Width, assignment.Radius, canardRestingAngle, canardSteeringAngle, canardBrakeAngle);
+
+#pragma endregion VehicleAntiGravity
 
 			// Determine where the front and rear axle offsets will end up.
 
@@ -441,6 +485,42 @@ void ABaseVehicle::PostInitializeComponents()
 	Physics.GravityStrength = FMath::Abs(GetGravityForce(true).Z);
 
 #pragma endregion VehicleBasicForces
+
+#pragma region VehicleAntiGravity
+
+	if (Antigravity == true)
+	{
+		SpringStiffness = 150.0f;
+		SpringEffect = 10.0f;
+		HoverDistance = GetMaxWheelRadius() * 1.5f;
+		BrakingCoefficient = 0.5f + ((1.0f - GetHoveringInstability()) * 0.2f);
+		GripCoefficient = 0.95f + ((1.0f - GetHoveringInstability()) * 0.1f);
+
+		float rc = 0.0f;
+		float maxX = 0.0f;
+
+		// Determine the most forward / rearward wheel position, and if it's the
+		// front or rear wheels which are the furthest away from the center.
+
+		for (FVehicleWheel& wheel : Wheels.Wheels)
+		{
+			if (maxX < FMath::Abs(wheel.SuspensionForcesOffset.X))
+			{
+				rc = wheel.Sensors[0].GetRestingCompression();
+				maxX = FMath::Abs(wheel.SuspensionForcesOffset.X);
+			}
+		}
+
+		for (FVehicleWheel& wheel : Wheels.Wheels)
+		{
+			for (FVehicleContactSensor& sensor : wheel.Sensors)
+			{
+				sensor.SetRestingCompression(rc);
+			}
+		}
+	}
+
+#pragma endregion VehicleAntiGravity
 
 	AI.OptimumSpeedExtension = FMath::Max(0.0f, (GripCoefficient - 0.5f) * 2.0f);
 
@@ -652,6 +732,12 @@ void ABaseVehicle::Tick(float deltaSeconds)
 	UpdateDriftingState(deltaSeconds);
 
 #pragma endregion VehicleDrifting
+
+#pragma region VehicleSlowTurningRecovery
+
+	UpdateVehicleDisorientation(deltaSeconds);
+
+#pragma endregion VehicleSlowTurningRecovery
 
 #pragma region VehicleControls
 
@@ -1517,6 +1603,25 @@ FVector ABaseVehicle::GetSuspensionForcesLocation(const FVehicleWheel& wheel, co
 {
 	FVector offset = wheel.SuspensionForcesOffset;
 
+#pragma region VehicleAntiGravity
+
+	if (Antigravity == true)
+	{
+		float maxX = 0.0f;
+
+		for (FVehicleWheel& thisWheel : Wheels.Wheels)
+		{
+			maxX = FMath::Max(maxX, FMath::Abs(thisWheel.SuspensionForcesOffset.X));
+		}
+
+		if (wheel.HasCenterPlacement() == false)
+		{
+			offset.X = FMath::Clamp(maxX, 190.0f, 210.0f) * FMathEx::UnitSign(offset.X);
+		}
+	}
+
+#pragma endregion VehicleAntiGravity
+
 	return transform.TransformPosition(offset);
 }
 
@@ -1526,6 +1631,26 @@ FVector ABaseVehicle::GetSuspensionForcesLocation(const FVehicleWheel& wheel, co
 
 float ABaseVehicle::GetGripRatio(const FVehicleContactSensor& sensor) const
 {
+
+#pragma region VehicleAntiGravity
+
+	if (Antigravity == true)
+	{
+		float ratio = TireFrictionModel->GripVsAntigravityCompression.GetRichCurve()->Eval(sensor.GetUnifiedAntigravityNormalizedCompression());
+
+#pragma region VehicleTeleport
+
+		// Fade in the grip after teleporting so we don't get a harsh reaction.
+
+		return ratio * FMath::Min(1.0f, (VehicleClock - Teleportation.LastVehicleClock) * 0.5f);
+
+#pragma endregion VehicleTeleport
+
+	}
+	else
+
+#pragma endregion VehicleAntiGravity
+
 	{
 		if (sensor.IsInContact() == true)
 		{
@@ -2239,6 +2364,21 @@ float ABaseVehicle::CalculateAssistedThrottleInput()
 {
 	float finalThrottle = Control.RawThrottleInput;
 
+#pragma region VehicleSlowTurningRecovery
+
+	// Keep the speed down low while the player is attempting a direction recovery.
+
+	if (GetSpeedKPH() < 150.0f &&
+		FMath::Abs(DisorientedYaw) > 20.0f &&
+		FMath::Abs(Control.SteeringPosition) > 0.75f)
+	{
+		float throttle = AICalculateThrottleForSpeed(GetFacingDirection(), FMathEx::KilometersPerHourToCentimetersPerSecond(75.0f));
+
+		finalThrottle = FMath::Min(finalThrottle, throttle);
+	}
+
+#pragma endregion VehicleSlowTurningRecovery
+
 	return finalThrottle;
 }
 
@@ -2579,6 +2719,15 @@ UParticleSystemComponent* ABaseVehicle::SpawnDrivingSurfaceEffect(const FVehicle
 			component->SetRelativeLocation(wheel.TireMesh->GetRelativeLocation());
 		}
 
+#pragma region VehicleAntiGravity
+
+		if (Antigravity == true)
+		{
+			component->SetRelativeLocation(FVector(-50.0f, 0.0f, (IsFlipped() == true) ? 100.0f : -100.0f));
+		}
+
+#pragma endregion VehicleAntiGravity
+
 		// Assign the new effect.
 
 		component->SetTemplate(particleSystem);
@@ -2788,6 +2937,16 @@ void ABaseVehicle::UpdateSurfaceEffects(float deltaSeconds)
 						float difference = coatingAlpha - alpha;
 						float changePerSecond = 1.0f / activeSurface.FadeTime;
 
+#pragma region VehicleAntiGravity
+
+						if (Antigravity == true)
+						{
+							coatingAlpha = 0.0f;
+						}
+						else
+
+#pragma endregion VehicleAntiGravity
+
 						{
 							if (FMath::Abs(difference) > changePerSecond * deltaSeconds)
 							{
@@ -2817,6 +2976,28 @@ void ABaseVehicle::UpdateSurfaceEffects(float deltaSeconds)
 							components.DestroyLastComponent();
 						}
 					}
+
+#pragma region VehicleAntiGravity
+
+					if (set == 0 &&
+						Antigravity == true)
+					{
+						// Position the dust generated under the rear canards correctly for antigravity vehicles.
+
+						for (FWheelDrivingSurface& surface : components.Surfaces)
+						{
+							if (GRIP_POINTER_VALID(surface.Surface) == true)
+							{
+								if (FMathEx::UnitSign(surface.Surface->GetRelativeLocation().Z) != ((IsFlipped() == true) ? +1.0f : -1.0f))
+								{
+									surface.Surface->SetRelativeLocation(FVector(-50.0f, 0.0f, (IsFlipped() == true) ? +100.0f : -100.0f));
+								}
+							}
+						}
+					}
+
+#pragma endregion VehicleAntiGravity
+
 				}
 			}
 		}
@@ -3151,11 +3332,84 @@ void ABaseVehicle::UpdateAnimatedBones(float deltaSeconds, const FVector& xdirec
 			WheelRotations[wheelIndex].Pitch = FMath::Fmod(WheelRotations[wheelIndex].Pitch, 3600.0f * FMathEx::UnitSign(WheelRotations[wheelIndex].Pitch));
 		}
 
+#pragma region VehicleAntiGravity
+
+		if (Antigravity == true &&
+			PlayGameMode != nullptr)
+		{
+			float braking = Control.BrakePosition;
+			float scale = wheel.CanardSteeringAngle * Propulsion.AirPower;
+			float throttle = Control.ThrottleList.GetLastValue();
+
+			if (HasAIDriver() == true)
+			{
+				// Stop the canards from fluttering when under AI bot control.
+
+				throttle = Control.ThrottleList.GetUnflutteredValue(GameMode->GetRealTimeClock() - 0.25f);
+			}
+
+			if (throttle < 0.0f)
+			{
+				braking = FMath::Max(braking, FMath::Abs(throttle));
+			}
+
+			float pitch = WheelRotations[wheelIndex].Pitch;
+
+			if (PlayGameMode->PastGameSequenceStart() == false)
+			{
+				WheelRotations[wheelIndex].Pitch = wheel.CanardRestingAngle * ((IsFlipped() == true) ? -1.0f : 1.0f);
+			}
+			else
+			{
+				if (wheel.Sensors[0].GetSide() < 0)
+				{
+					// Left side.
+
+					WheelRotations[wheelIndex].Pitch = FMathEx::NegativePow(Control.SteeringPosition, 0.5f) * scale;
+				}
+				else
+				{
+					// Right side.
+
+					WheelRotations[wheelIndex].Pitch = FMathEx::NegativePow(Control.SteeringPosition, 0.5f) * -scale;
+				}
+
+				if (braking != 0.0f &&
+					FMath::Abs(wheel.CanardBrakeAngle) > KINDA_SMALL_NUMBER)
+				{
+					WheelRotations[wheelIndex].Pitch = FMath::Lerp(WheelRotations[wheelIndex].Pitch, wheel.CanardBrakeAngle * ((IsFlipped() == true) ? -1.0f : 1.0f), braking);
+				}
+
+				if (Propulsion.AirPower < 1.0f)
+				{
+					WheelRotations[wheelIndex].Pitch = FMath::Lerp(WheelRotations[wheelIndex].Pitch, wheel.CanardRestingAngle * ((IsFlipped() == true) ? -1.0f : 1.0f), 1.0f - Propulsion.AirPower);
+				}
+			}
+
+			if (PlayGameMode->GetClock() != 0.0f)
+			{
+				float ratio = FMathEx::GetSmoothingRatio(0.9f, deltaSeconds);
+
+				WheelRotations[wheelIndex].Pitch = FMath::Lerp(WheelRotations[wheelIndex].Pitch, pitch, ratio);
+			}
+		}
+
+#pragma endregion VehicleAntiGravity
+
 		// Setup the offset of the wheel to be rendered with.
 
 		WheelOffsets[wheelIndex].Z = wheel.GetActiveSensor().GetExtension();
 
 		float travel = MaximumWheelTravel;
+
+#pragma region VehicleAntiGravity
+
+		if (Antigravity == true)
+		{
+			travel *= 1.0f - Propulsion.AirPower;
+		}
+
+#pragma endregion VehicleAntiGravity
 
 		if (WheelOffsets[wheelIndex].Z > travel)
 		{
@@ -3165,6 +3419,15 @@ void ABaseVehicle::UpdateAnimatedBones(float deltaSeconds, const FVector& xdirec
 		{
 			shiftVertical += WheelOffsets[wheelIndex].Z + travel;
 		}
+
+#pragma region VehicleAntiGravity
+
+		if (Antigravity == true)
+		{
+			WheelOffsets[wheelIndex].Z = 0.0f;
+		}
+
+#pragma endregion VehicleAntiGravity
 
 		if (Wheels.FlipTimer > 0.0f)
 		{
@@ -3183,10 +3446,31 @@ void ABaseVehicle::UpdateAnimatedBones(float deltaSeconds, const FVector& xdirec
 		launchOffset = LaunchTimer;
 	}
 
+#pragma region VehicleAntiGravity
+
+	if (Antigravity == true)
+	{
+		launchOffset *= Propulsion.AirPower;
+	}
+
+#pragma endregion VehicleAntiGravity
+
 	VehicleOffset.Z = launchOffset * ((IsFlipped() == true) ? +MaximumWheelTravel : -MaximumWheelTravel);
 	VehicleOffset.Z += shiftVertical / (float)GetNumWheels();
 
 #pragma endregion VehicleLaunch
+
+#pragma region VehicleAntiGravity
+
+	if (Antigravity == true)
+	{
+		for (int32 wheelIndex = 0; wheelIndex < GetNumWheels(); wheelIndex++)
+		{
+			WheelOffsets[wheelIndex].Z = VehicleOffset.Z;
+		}
+	}
+
+#pragma endregion VehicleAntiGravity
 
 	// Apply a visual roll to add tilt to the vehicle when cornering and most
 	// of the wheels are on the ground.
@@ -3281,6 +3565,16 @@ void ABaseVehicle::UpdateVisualRotation(float deltaSeconds, const FVector& xdire
 		VehicleRotation.Roll = (VehicleRotation.Roll * ratio) + torqueRoll;
 		VehicleRotation.Pitch = FMath::Lerp(VehiclePitchFrom, 0.0f, FMathEx::EaseInOut(FMath::Min(1.0f, VehiclePitchAccumulator), 3.0f));
 	}
+
+#pragma region VehicleAntiGravity
+
+	if (Antigravity == true)
+	{
+		VehicleRotation = FRotator::ZeroRotator;
+	}
+
+#pragma endregion VehicleAntiGravity
+
 }
 
 #pragma endregion VehicleAnimation
@@ -3501,6 +3795,17 @@ void ABaseVehicle::UpdateSkidAudio(float deltaSeconds)
 	if (SkiddingAudio != nullptr &&
 		IsVehicleDestroyed() == false)
 	{
+
+#pragma region VehicleAntiGravity
+
+		if (Antigravity == true)
+		{
+			SkidAudioVolume = 0.0f;
+		}
+		else
+
+#pragma endregion VehicleAntiGravity
+
 		{
 			SkidAudioVolume = FMathEx::GravitateToTarget(SkidAudioVolume, FMath::Max(Wheels.SkidAudioVolumeTarget, Wheels.SpinAudioVolumeTarget), deltaSeconds * 3.0f);
 		}
@@ -4121,6 +4426,57 @@ void ABaseVehicle::Teleport(FRouteFollower& routeFollower, FVector location, FRo
 
 #pragma endregion VehicleTeleport
 
+#pragma region VehicleSlowTurningRecovery
+
+/**
+* Update the vehicle disorientation.
+***********************************************************************************/
+
+void ABaseVehicle::UpdateVehicleDisorientation(float deltaSeconds)
+{
+	DisorientedYaw = 0.0f;
+
+	if (GameState->IsGameModeRace() == true)
+	{
+		float speedRatio = 1.0f - FMath::Min(GetSpeedKPH() / 300.0f, 1.0f);
+
+		if (speedRatio > KINDA_SMALL_NUMBER)
+		{
+			if (GRIP_POINTER_VALID(AI.RouteFollower.ThisSpline) == true)
+			{
+				FVector tdirection = GetTargetHeading();
+				FVector xdirection = GetTransform().GetUnitAxis(EAxis::X);
+				FVector ydirection = GetTransform().GetUnitAxis(EAxis::Y);
+
+				float dotx = FVector::DotProduct(tdirection, xdirection);
+				float doty = FVector::DotProduct(tdirection, ydirection);
+
+				float degrees = FMathEx::DotProductToDegrees(dotx);
+				bool negative = ((Wheels.SoftFlipped == true) ? doty < 0.0f : doty > 0.0f);
+
+				degrees *= ((negative == true) ? -1.0f : 1.0f);
+
+				degrees = FMath::Clamp(degrees, -33.0f, 33.0f);
+
+				DisorientedYaw = degrees * speedRatio;
+			}
+		}
+	}
+
+	if (FMath::Abs(DisorientedYaw) < KINDA_SMALL_NUMBER)
+	{
+		DisorientedTimer -= deltaSeconds;
+	}
+	else
+	{
+		DisorientedTimer += deltaSeconds;
+	}
+
+	DisorientedTimer = FMath::Clamp(DisorientedTimer, 0.0f, 1.0f);
+}
+
+#pragma endregion VehicleSlowTurningRecovery
+
 #pragma region VehicleBoost
 
 /**
@@ -4141,6 +4497,17 @@ void ABaseVehicle::UpdateBoost(float deltaSeconds)
 			Propulsion.AutoBoostShake = FMath::Max(0.0f, Propulsion.AutoBoostShake);
 
 			float antigravityScale = 1.0f;
+
+#pragma region VehicleAntiGravity
+
+#if GRIP_NERF_ANTIGRAVITY_BOOST
+			if (Antigravity == true)
+			{
+				antigravityScale *= 0.7f;
+			}
+#endif // GRIP_NERF_ANTIGRAVITY_BOOST
+
+#pragma endregion VehicleAntiGravity
 
 			Propulsion.AutoBoost += deltaSeconds * antigravityScale * 0.05f * (1.0f - (RaceState.BoostCatchupRatio * scale));
 

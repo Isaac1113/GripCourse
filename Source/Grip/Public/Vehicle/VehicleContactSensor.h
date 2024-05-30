@@ -290,6 +290,47 @@ private:
 
 	// The shape to be used for performing a sensor sweep.
 	FCollisionShape SweepShape;
+
+#pragma region VehicleAntiGravity
+
+public:
+
+	// Get a normalized compression ratio of the suspension between 0 and 10, 1 being resting under static weight.
+	// Up to 2 is normally the maximum range.
+	float GetAntigravityNormalizedCompression() const
+	{ return GetAntigravityNormalizedCompression(SurfaceDistance); }
+
+	// Get the unified normalized antigravity compression for all active suspension on a vehicle.
+	float GetUnifiedAntigravityNormalizedCompression() const
+	{ return UnifiedAntigravityNormalizedCompression; }
+
+	// Set the unified normalized antigravity compression for all active suspension on a vehicle.
+	void SetUnifiedAntigravityNormalizedCompression(float compression)
+	{ UnifiedAntigravityNormalizedCompression = compression; }
+
+private:
+
+	// Get a normalized compression ratio of the suspension spring between 0 and 10, 1 being resting under static weight.
+	float GetAntigravityNormalizedCompression(float value) const;
+
+	// Calculate the current hovering distance for antigravity vehicles.
+	float CalculateAntigravity(float deltaTime, const FTransform& transform, const FVector& direction);
+
+	// The normalized antigravity compression for all active suspension on a vehicle.
+	float UnifiedAntigravityNormalizedCompression = 0.0f;
+
+	// The sine noise used in rendering unstable antigravity vehicles.
+	float HoverOffset = 0.0f;
+
+	// Compute sine noise to be used by HoverOffset in rendering unstable antigravity vehicles.
+	FMathEx::FSineNoise HoverNoise = true;
+
+	// The direction in which we're tilting, not the same as Direction, used for tilting
+	// the sensors at times, normally to aid driving from walls to floors easily.
+	FVector TiltDirection = FVector::UpVector;
+
+#pragma endregion VehicleAntiGravity
+
 };
 
 #pragma endregion VehicleContactSensors

@@ -89,8 +89,10 @@ struct FVehicleWheel
 {
 public:
 
+#pragma region VehicleAntiGravity
+
 	// Construct a wheel.
-	FVehicleWheel(FName boneName, const FVector& boneOffset, const FVector& standardBoneOffset, const FVector& suspensionForcesOffset, EWheelPlacement placement, float width, float radius)
+	FVehicleWheel(FName boneName, const FVector& boneOffset, const FVector& standardBoneOffset, const FVector& suspensionForcesOffset, EWheelPlacement placement, float width, float radius, float canardRestingAngle, float canardSteeringAngle, float canardBrakeAngle)
 		: BoneName(boneName)
 		, BoneOffset(boneOffset)
 		, StandardBoneOffset(standardBoneOffset)
@@ -98,7 +100,12 @@ public:
 		, Placement(placement)
 		, Width(width)
 		, Radius(radius)
+		, CanardRestingAngle(canardRestingAngle)
+		, CanardSteeringAngle(canardSteeringAngle)
+		, CanardBrakeAngle(canardBrakeAngle)
 	{ }
+
+#pragma endregion VehicleAntiGravity
 
 	// Has the wheel got front placement on the vehicle?
 	bool HasFrontPlacement() const
@@ -219,6 +226,19 @@ private:
 
 	// The radius of the wheel.
 	float Radius;
+
+#pragma region VehicleAntiGravity
+
+	// If this is a canard, then the angle at which it rests before firing up the engine.
+	float CanardRestingAngle = 0.0f;
+
+	// If this is a canard, then the maximum steering angle.
+	float CanardSteeringAngle = 0.0f;
+
+	// If this is a canard, then the maximum brake angle.
+	float CanardBrakeAngle = 0.0f;
+
+#pragma endregion VehicleAntiGravity
 
 	// The two sensors attached to both surfaces of this wheel.
 	// The first points "up", and the second, "down".

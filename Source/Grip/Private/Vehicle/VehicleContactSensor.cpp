@@ -280,6 +280,13 @@ void FVehicleContactSensor::Tick(float deltaTime, UWorld* world, const FTransfor
 	if (calculateIfUpward == true ||
 		GetAlignment() < 0.0f)
 	{
+
+#pragma region VehicleAntiGravity
+
+		CalculateAntigravity(deltaTime, transform, direction);
+
+#pragma endregion VehicleAntiGravity
+
 		// updatePhysics is only true if the sensor is part of the "active" set for a flippable vehicle -
 		// either the top or bottom set depending on where we've detected a driving surface.
 
@@ -304,6 +311,12 @@ void FVehicleContactSensor::Tick(float deltaTime, UWorld* world, const FTransfor
 				CompressingHard = false;
 			}
 		}
+
+#pragma region VehicleAntiGravity
+
+		SetUnifiedAntigravityNormalizedCompression(GetAntigravityNormalizedCompression());
+
+#pragma endregion VehicleAntiGravity
 
 		CompressionList.AddValue(Vehicle->GetVehicleClock(), GetNormalizedCompression());
 	}
@@ -330,7 +343,21 @@ void FVehicleContactSensor::ApplyForce(const FVector& atPoint) const
 
 FVector FVehicleContactSensor::GetDirection() const
 {
+
+#pragma region VehicleAntiGravity
+
+#if GRIP_ANTIGRAVITY_TILT_COMPENSATION
+
+	return TiltDirection * Alignment;
+
+#else // GRIP_ANTIGRAVITY_TILT_COMPENSATION
+
 	return Direction * Alignment;
+
+#endif // GRIP_ANTIGRAVITY_TILT_COMPENSATION
+
+#pragma endregion VehicleAntiGravity
+
 }
 
 /**
@@ -422,6 +449,18 @@ float FVehicleContactSensor::GetExtension() const
 {
 	float result = (((EndPoint - StartPoint).Size() - WheelRadius) + StartOffset) * GetAlignment();
 
+#pragma region VehicleAntiGravity
+
+	if (Vehicle->Antigravity == true)
+	{
+		if (FMathEx::UnitSign(result) == GetAlignment())
+		{
+			result = 0.0f;
+		}
+	}
+
+#pragma endregion VehicleAntiGravity
+
 	return result;
 }
 
@@ -455,5 +494,151 @@ EGameSurface FVehicleContactSensor::GetGameSurface() const
 
 	return EGameSurface::Num;
 }
+
+#pragma region VehicleAntiGravity
+
+/**
+* Get a normalized compression ratio of the suspension spring between 0 and 10, 1
+* being resting under static weight.
+***********************************************************************************/
+
+float FVehicleContactSensor::GetAntigravityNormalizedCompression(float value) const
+{
+	if (InContact == true)
+	{
+		value -= WheelRadius + HoverDistance;
+
+		if (value < 0.0f)
+		{
+			return FMath::Max(1.0f, GetNormalizedCompression());
+		}
+		else
+		{
+			return FMath::Max(0.0f, 1.0f - (value / (HoverContactDistance - HoverDistance)));
+		}
+	}
+	else
+	{
+		return 0.0f;
+	}
+}
+
+/**
+* Calculate the current hovering distance for antigravity vehicles.
+***********************************************************************************/
+
+float FVehicleContactSensor::CalculateAntigravity(float deltaTime, const FTransform& transform, const FVector& direction)
+{
+	TiltDirection = direction;
+
+	if (Vehicle->Antigravity == true)
+	{
+		float hoverScale = Vehicle->GetAirPower();
+		float speedScale = FMathEx::GetRatio(Vehicle->GetSpeedKPH(), 0.0f, 400.0f);
+		float steering = Vehicle->GetVehicleControl().AntigravitySteeringPosition * ((Vehicle->IsFlipped() == true) ? -1 : +1);
+
+		// Update the hovering noise and calculate the current noise values for adding
+		// unbalanced instability to the hovering vehicle.
+
+		HoverNoise.Tick(deltaTime * FMath::Lerp(1.5f, 2.0f, speedScale));
+
+		float tilt = 0.0f;
+		float deepOffset = Vehicle->HoverNoise.GetValue() * FMath::Lerp(10.0f, 20.0f, speedScale);
+
+		if (deepOffset < 0.0f)
+		{
+			deepOffset *= FMath::Lerp(1.0f, 0.75f, speedScale);
+		}
+
+		if (FMath::Abs(steering) > KINDA_SMALL_NUMBER)
+		{
+			float scale = FMath::Abs(FVector::DotProduct(Vehicle->GetFacingDirection(), Vehicle->GetVelocityOrFacingDirection()));
+
+			tilt = FMath::Abs(steering * scale) * hoverScale;
+
+			deepOffset = FMath::Max(deepOffset, FMath::Lerp(-25.0f, -10.0f, tilt));
+		}
+
+		if (Vehicle->IsCockpitView() == true)
+		{
+			HoverOffset = 0.0f;
+		}
+		else
+		{
+			HoverOffset = HoverNoise.GetValue() * FMath::Lerp(2.0f, 3.5f, FMath::Lerp(1.0f, speedScale, (Vehicle->GetHoveringInstability() * 0.5f) + 0.5f));
+
+			if (Vehicle->SpringArm->IsBumperView() == true &&
+				Vehicle->IsCinematicCameraActive(false) == false)
+			{
+				// Don't jitter about so much when using the bumper camera, it's distracting.
+
+				HoverOffset *= 0.333f;
+			}
+		}
+
+		HoverOffset = FMath::Lerp(HoverOffset * 0.5f, HoverOffset, Vehicle->GetHoveringInstability());
+		HoverOffset += deepOffset;
+
+		HoverDistance = (Vehicle->HoverDistance + HoverOffset) * hoverScale;
+
+		if (FMath::Abs(tilt) + OutboardOffset > KINDA_SMALL_NUMBER)
+		{
+			// Handle the banking of the vehicle with regard to steering.
+
+			tilt *= 40.0f;
+
+			if (FMathEx::UnitSign(Side) == FMathEx::UnitSign(steering) == true)
+			{
+				// Drop it.
+
+				tilt = -tilt;
+			}
+			else
+			{
+				// Raise it.
+			}
+
+			tilt *= TiltScale;
+
+			HoverDistance += tilt;
+
+#if GRIP_ANTIGRAVITY_TILT_COMPENSATION
+
+			float flat = FMath::RadiansToDegrees(FMath::Atan2(Side, 0.0f));
+			float tilted = FMath::RadiansToDegrees(FMath::Atan2(Side, tilt));
+			float roll = flat - tilted;
+
+			if (OutboardOffset != 0.0f &&
+				FMath::Abs(Vehicle->GetLaunchDirection().Z) < 0.5f)
+			{
+				// Use the OutboardOffset to adjust the tilt direction towards the outboard
+				// direction in order to help transition the vehicle to a different surface,
+				// a very sharp transition from a wall to a floor for example. If we didn't
+				// do this, then the vehicle would get stuck on the wall until the scenery
+				// geometry changed naturally to a more amenable angle between them.
+
+				roll += OutboardOffset * ((Side > 0.0f) ? -50.0f : +50.0f);
+
+				HoverDistance += HoverDistance * FMath::Tan(FMath::DegreesToRadians(FMath::Abs(roll)));
+			}
+
+			if (Vehicle->IsFlipped() == true)
+			{
+				roll *= -1.0f;
+			}
+
+			TiltDirection = transform.TransformVector(FRotator(0.0f, 0.0f, roll).RotateVector(FVector(0.0f, 0.0f, 1.0f)));
+
+#endif // GRIP_ANTIGRAVITY_TILT_COMPENSATION
+
+		}
+
+		HoverContactDistance = HoverDistance + (Vehicle->HoverDistance * 4.0f * hoverScale);
+	}
+
+	return HoverDistance;
+}
+
+#pragma endregion VehicleAntiGravity
 
 #pragma endregion VehicleContactSensors

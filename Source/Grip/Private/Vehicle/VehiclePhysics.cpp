@@ -99,6 +99,12 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 		Physics.Timing.TickSum += deltaSeconds;
 	}
 
+#pragma region VehicleAntiGravity
+
+	HoverNoise.Tick(deltaSeconds * FMath::Lerp(0.25f, 0.75f, FMathEx::GetRatio(GetSpeedKPH(), 0.0f, 400.0f)));
+
+#pragma endregion VehicleAntiGravity
+
 	// Grab a few things directly from the physics body and keep them in local variables,
 	// sharing them around the update where appropriate.
 
@@ -180,6 +186,35 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 
 #pragma endregion VehicleGrip
 
+#pragma region VehicleAntiGravity
+
+	if (Antigravity == true)
+	{
+		// Perform some extended smoothing on the steering position for antigravity vehicle
+		// as it they react too sharply they just feel wrong.
+
+		float steering = steeringPosition * FMathEx::GetRatio(GetSpeedKPH() * FMath::Abs(FVector::DotProduct(GetDirection(), GetVelocityDirection())), 10.0f, 100.0f) * (1.0f - Control.BrakePosition);
+		float ratio = FMathEx::GetSmoothingRatio(0.9f, deltaSeconds);
+		float newPosition0 = FMathEx::GravitateToTarget(Control.AntigravitySteeringPosition, steering, deltaSeconds * 1.5f);
+		float newPosition1 = FMath::Lerp(steering, Control.AntigravitySteeringPosition, ratio);
+
+		Control.AntigravitySteeringPosition = (FMath::Abs(newPosition1 - steering) < FMath::Abs(newPosition0 - steering)) ? newPosition0 : newPosition1;
+
+#pragma region VehicleTeleport
+
+		float lag = FMath::Lerp(0.9f, GRIP_ANTIGRAVITY_LAGGY_STEERING, FMath::Min(1.0f, (VehicleClock - Teleportation.LastVehicleClock) * 0.5f));
+
+#pragma endregion VehicleTeleport
+
+		steeringPosition = FMath::Lerp(steeringPosition, Control.AntigravitySteeringPosition, lag);
+	}
+	else
+	{
+		Control.AntigravitySteeringPosition = steeringPosition;
+	}
+
+#pragma endregion VehicleAntiGravity
+
 #pragma region VehicleContactSensors
 
 	// Update the springs and record how many wheels are in contact with surfaces.
@@ -253,6 +288,26 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 #endif // GRIP_VARIABLE_MASS_AND_INERTIA_TENSOR
 
 #pragma endregion VehiclePhysicsTweaks
+
+#pragma region VehicleAntiGravity
+
+	// Update the air power of the antigravity vehicles.
+
+	if (PlayGameMode != nullptr &&
+		PlayGameMode->PastGameSequenceStart() == true)
+	{
+		if (Propulsion.AirPowerCut > 0.0f)
+		{
+			Propulsion.AirPowerCut = FMath::Max(0.0f, Propulsion.AirPowerCut - deltaSeconds);
+		}
+
+		if (Propulsion.AirPowerCut == 0.0f)
+		{
+			Propulsion.AirPower = FMath::Min(Propulsion.AirPower + deltaSeconds * 0.5f, 1.0f);
+		}
+	}
+
+#pragma endregion VehicleAntiGravity
 
 #pragma region VehicleBasicForces
 
@@ -446,6 +501,25 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 #endif // GRIP_NORMALIZED_WEIGHT_ON_WHEEL
 
 #pragma endregion VehiclePhysicsTweaks
+
+#pragma region VehicleAntiGravity
+
+	float forwardRatio = 1.0f;
+	float scaleAntigravity = 1.0f;
+
+	if (Antigravity == true)
+	{
+		// scaleAntigravity simply means less grip the more sideways we're moving as we want to have
+		// great grip when traveling forwards but not have the vehicle solid on the ground when collided
+		// against when hit from the side - it is floating after all with no apparent friction force
+		// to hold it in place.
+
+		// Do some processing for antigravity vehicles.
+
+		UpdateAntigravityForwardsAndScale(deltaSeconds, brakePosition, forwardRatio, scaleAntigravity);
+	}
+
+#pragma endregion VehicleAntiGravity
 
 #pragma region VehicleGrip
 
@@ -651,7 +725,7 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 			{
 				// Invert the lateral friction as we want to oppose the side-slip force.
 
-				lateralForce = -LateralFriction(lateralGripScale, lateralSlip, wheel);
+				lateralForce = -LateralFriction(lateralGripScale, lateralSlip, wheel) * scaleAntigravity;
 
 #pragma region VehicleDrifting
 
@@ -663,12 +737,59 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 
 #pragma endregion VehicleDrifting
 
+#pragma region VehicleAntiGravity
+
+				// This smooths out the regaining of traction when you've been sideways. Don't be tempted to
+				// remove this or amalgamate with scaleAntigravity, it's important for smoothing things out as
+				// Physics.AntigravityLateralGrip itself is smoothed over time.
+
+				float antigravityGrip = FMath::Lerp(1.0f, Physics.AntigravityLateralGrip, FMathEx::GetRatio(GetSpeedKPH(), 50.0f, 150.0f) * forwardRatio);
+
+				scaleGrip *= FMath::Lerp(antigravityGrip, 1.0f, brakePosition);
+
+#pragma endregion VehicleAntiGravity
+
 				// Take the wheel side direction, then multiply by lateral force and the computed scales.
 
 				float lateralForceStrength = wheel.LateralForceStrength;
 
 				wheel.LateralForceStrength = lateralForce * scaleGrip;
 				wheel.LateralForceVector = lateralAxis * wheel.LateralForceStrength;
+
+#pragma region VehicleAntiGravity
+
+				if (Antigravity == true &&
+					forwardRatio < 1.0f - KINDA_SMALL_NUMBER &&
+					FMath::Abs(steeringPosition) > KINDA_SMALL_NUMBER)
+				{
+					// We're going to do some thrust vectoring from the steering here rather than using
+					// classic tire grip. That's because antigravity vehicles can't really do anything
+					// once they enter a sideways state in order to correct themselves, so we give them
+					// this additional steering ability here.
+
+					float vectoredStrength = 5.0f * steeringPosition * ((IsFlipped() == true) ? -1.0f : 1.0f);
+					float yawRate = GetAngularVelocity().Z * ((IsFlipped() == true) ? -1.0f : 1.0f);
+
+					if (FMathEx::UnitSign(yawRate) == FMathEx::UnitSign(steeringPosition))
+					{
+						vectoredStrength *= 1.0f - FMath::Min(1.0f, FMath::Abs(yawRate) / (FMath::Abs(steeringPosition) * 25.0f));
+					}
+
+					FVector vectoredForce = vectoredStrength * GetSideDirection();
+
+					if (wheel.BoneOffset.X < 0.0f)
+					{
+						vectoredForce *= -1.0f;
+					}
+
+					float vectoredRatio = (1.0f - forwardRatio) * FMath::Abs(steeringPosition) * FMathEx::GetRatio(GetSpeedKPH(), 5.0f, 10.0f);
+
+					wheel.LateralForceStrength += vectoredStrength * vectoredRatio;
+					wheel.LateralForceVector += vectoredForce * vectoredRatio;
+				}
+
+#pragma endregion VehicleAntiGravity
+
 				wheel.TwoFrameLateralForceStrength = (lateralForceStrength + wheel.LateralForceStrength) * 0.5f;
 
 				// We want to lose lateral grip when the wheels lock up - it makes no sense to be
@@ -800,6 +921,18 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 				check(FMath::IsNaN(surfaceFriction) == false);
 
 				FVector lateralForceVector = wheel.LateralForceVector * weightOnWheel * forceScale * surfaceFriction * GripCoefficient * gripScale;
+
+#pragma region VehicleAntiGravity
+
+				if (Antigravity == true &&
+					RaceState.RaceTime > 2.0f)
+				{
+					// Lose grip when we've lost power, but not on the start line.
+
+					lateralForceVector *= 0.25f + (Propulsion.AirPower * 0.75f);
+				}
+
+#pragma endregion VehicleAntiGravity
 
 				if (wheel.HasCenterPlacement() == false)
 				{
@@ -1644,6 +1777,32 @@ int32 ABaseVehicle::UpdateContactSensors(float deltaSeconds, const FTransform& t
 
 #pragma endregion VehiclePhysicsTweaks
 
+#pragma region VehicleAntiGravity
+
+		else if (Antigravity == true)
+		{
+			// Try to balance the forces when not in contact so that we don't get the back-end
+			// pushing you over if the front-end has no contact, like coming off a ramp for example.
+
+			for (FVehicleWheel& wheel : Wheels.Wheels)
+			{
+				int32 setIndex = 0;
+
+				for (FVehicleContactSensor& sensor : wheel.Sensors)
+				{
+					if (maxForce[setIndex] > 0.0f &&
+						sensor.GetNonContactTime() > 0.0f)
+					{
+						sensor.ForceToApply = FMath::Lerp(maxForceVector[setIndex], sensor.ForceToApply, FMathEx::GetRatio(sensor.GetNonContactTime() - 0.1f, 0.0f, 0.5f));
+					}
+
+					setIndex++;
+				}
+			}
+		}
+
+#pragma endregion VehicleAntiGravity
+
 		// Determine which is the currently grounded sensor set, if any.
 
 		if (numUpContact == numWheels)
@@ -1825,6 +1984,12 @@ int32 ABaseVehicle::UpdateContactSensors(float deltaSeconds, const FTransform& t
 
 		bounceCompression = (PlayGameMode != nullptr && PlayGameMode->PastGameSequenceStart());
 
+#pragma region VehicleAntiGravity
+
+		float minAntigravityCompression = 100.0f;
+
+#pragma endregion VehicleAntiGravity
+
 		for (FVehicleWheel& wheel : Wheels.Wheels)
 		{
 			wheel.SensorIndex = (Wheels.SoftFlipped == true) ? 0 : 1;
@@ -1834,6 +1999,21 @@ int32 ABaseVehicle::UpdateContactSensors(float deltaSeconds, const FTransform& t
 				Wheels.DetectedSurfaces = true;
 			}
 
+#pragma region VehicleAntiGravity
+
+			if (Antigravity == true)
+			{
+				minAntigravityCompression = FMath::Min(minAntigravityCompression, wheel.GetActiveSensor().GetAntigravityNormalizedCompression());
+
+				if (wheel.GetActiveSensor().GetNormalizedCompression() < 1.33f)
+				{
+					bounceCompression = false;
+				}
+			}
+			else
+
+#pragma endregion VehicleAntiGravity
+
 			{
 				if (wheel.GetActiveSensor().GetNormalizedCompression() < 1.0f)
 				{
@@ -1842,8 +2022,26 @@ int32 ABaseVehicle::UpdateContactSensors(float deltaSeconds, const FTransform& t
 			}
 		}
 
+#pragma region VehicleAntiGravity
+
+		bool blocked = false;
+		float steering = Control.SteeringPosition;
+		float offsetY = (IsFlipped() == true) ? -1.0f : 1.0f;
+
+#pragma endregion VehicleAntiGravity
+
 		for (FVehicleWheel& wheel : Wheels.Wheels)
 		{
+
+#pragma region VehicleAntiGravity
+
+			if (Antigravity == true)
+			{
+				wheel.GetActiveSensor().SetUnifiedAntigravityNormalizedCompression(minAntigravityCompression);
+			}
+
+#pragma endregion VehicleAntiGravity
+
 			// Finally, actually apply the suspension forces to the vehicle for each wheel.
 
 			for (FVehicleContactSensor& sensor : wheel.Sensors)
@@ -1873,7 +2071,79 @@ int32 ABaseVehicle::UpdateContactSensors(float deltaSeconds, const FTransform& t
 			{
 				wheel.ModeTime += deltaSeconds;
 			}
+
+#pragma region VehicleAntiGravity
+
+			if (Antigravity == true)
+			{
+				// Calculate the outboard offset for the contact sensor, allowing it to adjust
+				// its tilt direction towards the outboard direction in order to transition the
+				// vehicle to a different surface - a very sharp transition from a wall to a
+				// floor for example. If we didn't do this, then the vehicle would get stuck on
+				// the wall until the scenery geometry changed naturally to a more amenable
+				// angle between them.
+
+				float& offset = wheel.GetActiveSensor().OutboardOffset;
+
+				wheel.GetActiveSensor().TiltScale = 1.0f;
+
+				if ((wheel.StandardBoneOffset.Y * offsetY < 0.0f) &&
+					((AI.LastHardCollisionBlockage & VehicleBlockedLeft) != 0))
+				{
+					// We're blocked on the left side with a non-vehicle contact.
+
+					blocked = true;
+
+					if (steering < -GRIP_STEERING_PURPOSEFUL)
+					{
+						// We're steering into the side blockage.
+
+						offset += deltaSeconds * 2.0f;
+					}
+				}
+				else if ((wheel.StandardBoneOffset.Y * offsetY > 0.0f) &&
+					((AI.LastHardCollisionBlockage & VehicleBlockedRight) != 0))
+				{
+					// We're blocked on the right side with a non-vehicle contact.
+
+					blocked = true;
+
+					if (steering > GRIP_STEERING_PURPOSEFUL)
+					{
+						// We're steering into the side blockage.
+
+						offset += deltaSeconds * 2.0f;
+					}
+				}
+				else
+				{
+					offset -= deltaSeconds * 4.0f;
+				}
+
+				offset = FMath::Clamp(offset, 0.0f, 1.0f);
+			}
+
+#pragma endregion VehicleAntiGravity
+
 		}
+
+#pragma region VehicleAntiGravity
+
+		if (blocked == true &&
+			Antigravity == true)
+		{
+			// If we're blocked on this wheel then kill the tilt scale.
+
+			for (FVehicleWheel& wheel : Wheels.Wheels)
+			{
+				for (FVehicleContactSensor& sensor : wheel.Sensors)
+				{
+					sensor.TiltScale = 0.0f;
+				}
+			}
+		}
+
+#pragma endregion VehicleAntiGravity
 
 		if (Wheels.HardFlipped != Wheels.SoftFlipped &&
 			IsPracticallyGrounded() == true)
@@ -1952,6 +2222,17 @@ int32 ABaseVehicle::UpdateContactSensors(float deltaSeconds, const FTransform& t
 
 			if (scale > KINDA_SMALL_NUMBER)
 			{
+
+#pragma region VehicleAntiGravity
+
+				if (Antigravity == true)
+				{
+					scale = scale * 0.25f + 0.5f;
+				}
+				else
+
+#pragma endregion VehicleAntiGravity
+
 				{
 					scale = scale * 0.25f + 0.4f;
 				}
@@ -2023,6 +2304,16 @@ int32 ABaseVehicle::UpdateContactSensors(float deltaSeconds, const FTransform& t
 
 			VehicleMesh->AddForceSubstep(Physics.Bounce.Direction * Physics.Bounce.Force * Physics.Bounce.Timer * Physics.CurrentMass * 25000.0f);
 		}
+
+#pragma region VehicleAntiGravity
+
+		if (Antigravity == true)
+		{
+			Physics.Bounce.Timer -= deltaSeconds * 8.0f;
+		}
+		else
+
+#pragma endregion VehicleAntiGravity
 
 		{
 			Physics.Bounce.Timer -= deltaSeconds * 12.0f;
@@ -2223,6 +2514,15 @@ FVector ABaseVehicle::GetDownForce()
 
 	float maxDistance = 4.0f * 100.0f;
 	float maxWheelRadius = GetMaxWheelRadius();
+
+#pragma region VehicleAntiGravity
+
+	if (Antigravity == true)
+	{
+		maxDistance += HoverDistance * GetAirPower();
+	}
+
+#pragma endregion VehicleAntiGravity
 
 	// No down force if one of the axles is properly airborne, or more than
 	// maxDistance away from the driving surface.
@@ -2565,6 +2865,15 @@ void ABaseVehicle::UpdateDriftingPhysics(float deltaSeconds, float steeringPosit
 		}
 	}
 
+#pragma region VehicleAntiGravity
+
+	// Less drifting the more we lose grip due to going sideways with Airblades, because we can't
+	// drift and slide at the same time.
+
+	targetDriftAngle *= Physics.AntigravityLateralGrip;
+
+#pragma endregion VehicleAntiGravity
+
 	// If we were airborne for a little while, and have recently landed, give a little time for no
 	// drifting and then give a short time to ease drifting back in. This gives you a chance
 	// straighten up after a landing without drifting interfering.
@@ -2615,6 +2924,64 @@ void ABaseVehicle::UpdateDriftingPhysics(float deltaSeconds, float steeringPosit
 
 #pragma endregion VehicleDrifting
 
+#pragma region VehicleAntiGravity
+
+/**
+* Update the forwards and antigravity scaling ratios for antigravity vehicles.
+***********************************************************************************/
+
+void ABaseVehicle::UpdateAntigravityForwardsAndScale(float deltaSeconds, float brakePosition, float& forwardRatio, float& scaleAntigravity)
+{
+	// Lose "grip" when sliding sideways in antigravity vehicles.
+
+	float sideSlip = 0.0f;
+
+	if (RaceState.RaceTime > 2.0f)
+	{
+		sideSlip = FVector::DotProduct(GetVelocityOrFacingDirection(), GetSideDirection());
+		sideSlip = FMath::Lerp(0.0f, sideSlip, FMathEx::GetRatio(GetSpeedKPH(), 2.0f, 4.0f));
+	}
+
+	float angle = FMath::RadiansToDegrees(FMath::Acos(1.0f - FMath::Abs(sideSlip)));
+	FRichCurveKey lastKey = TireFrictionModel->LateralGripVsSlip.GetRichCurve()->GetLastKey();
+	float lastAngle = lastKey.Time;
+
+	if (angle > lastAngle)
+	{
+		// Lose up to 66% of your grip after you get sideways by a reasonable amount.
+		// The more sideways you are, the more grip you lose.
+
+		float gripLoss = FMath::Lerp(0.666f, 0.333f, Physics.AntigravitySideSlip);
+		float angleRatio = FMathEx::GetRatio(angle, lastAngle, lastAngle + 30.0f);
+		float newScale = FMath::InterpEaseInOut(1.0f, gripLoss, angleRatio, 2.0f);
+
+		forwardRatio = FMath::InterpEaseInOut(1.0f, 0.0f, angleRatio, 2.0f);
+
+		// The more we're braking, the less we're sliding.
+
+		scaleAntigravity = FMath::Lerp(newScale, 1.0f, brakePosition * (1.0f - Physics.VehicleTBoned));
+	}
+
+	// Calculate a grip scale for antigravity vehicles based on how far away
+	// the direction of the vehicle is compared to its velocity vector. The
+	// more sideways we are, the less grip we'll give the vehicle. This is
+	// used to transition smoothly between sideways slipperiness and hard
+	// grip when getting back to facing the velocity vector with no harsh
+	// jerking.
+
+	if (IsAirborne() == true)
+	{
+		Physics.AntigravityLateralGrip = 1.0f;
+		Physics.AntigravitySideSlip = FMath::Min(Physics.AntigravitySideSlip + (deltaSeconds * 0.666f), 1.0f);
+	}
+	else
+	{
+		Physics.AntigravityLateralGrip = FMathEx::GravitateUpToTarget(Physics.AntigravityLateralGrip, forwardRatio, deltaSeconds * 0.25f);
+	}
+}
+
+#pragma endregion VehicleAntiGravity
+
 #if WITH_PHYSX
 #if GRIP_ENGINE_PHYSICS_MODIFIED
 
@@ -2655,16 +3022,82 @@ bool ABaseVehicle::ModifyContact(uint32 bodyIndex, AActor* other, physx::PxConta
 
 			vehicleCollisionInertia = FMath::Lerp(vehicleCollisionInertia * 2.0f, vehicleCollisionInertia, FMath::Pow(FMath::Abs(dp), 0.5f));
 
+#pragma region VehicleAntiGravity
+
+			// By default, antigravity vehicles are more prone to rotational collision response
+			// than wheeled vehicles.
+
+			float antigravityVehicleCollisionInertia = vehicleCollisionInertia * 2.0f;
+
+			if (Antigravity == true)
+			{
+				bool hitOurSide = false;
+
+				float width = VehicleCollision->GetUnscaledBoxExtent().Y * 0.75f;
+				float otherWidth = otherVehicle->VehicleCollision->GetUnscaledBoxExtent().Y * 0.75f;
+
+				// Examine the contacts for this body to see if they are forward or rearward.
+				// If forward, then don't damp so much as it's implausible.
+
+				int32 pointNum = 0;
+				float pointAvg = 0.0f;
+				const FTransform& transform = VehicleMesh->GetPhysicsTransform();
+
+				for (uint32 i = 0; i < contacts.size(); i++)
+				{
+					FVector point = transform.InverseTransformPosition(*(FVector*)&contacts.getPoint(i));
+
+					pointAvg += point.X;
+					pointNum++;
+
+					if (FMath::Abs(point.Y) > width)
+					{
+						hitOurSide = true;
+					}
+				}
+
+				// Manage the side-impact t-boned grip reduction by registering the event to
+				// be handled later in the physics sub-step.
+
+				float tbonedRatio = FMath::Abs(FVector::DotProduct(GetSideDirection(), otherVehicle->GetVelocityOrFacingDirection()));
+
+				if (hitOurSide == true &&
+					tbonedRatio > 0.5f)
+				{
+					Physics.VehicleTBoned = FMath::Max(Physics.VehicleTBoned, tbonedRatio);
+				}
+
+				tbonedRatio *= FMathEx::GetRatio(otherVehicle->GetSpeedKPH(), 0.0f, 50.0f);
+
+				Physics.AntigravitySideSlip = FMath::Max(Physics.AntigravitySideSlip, tbonedRatio);
+
+				if (pointNum != 0)
+				{
+					pointAvg /= pointNum;
+
+					float ratio = FMathEx::GetRatio(pointAvg / 200.0f, 0.0f, 1.0f);
+
+					// Not sure why we have to increase inertia tensor compared to other vehicles when the impact is
+					// at the front but we do - we observe horrendous spinning out problems if you take a front
+					// impact otherwise even if they appear to be quite flat, parallel collisions.
+
+					antigravityVehicleCollisionInertia = FMath::Lerp(antigravityVehicleCollisionInertia, vehicleCollisionInertia, ratio);
+				}
+			}
+
 			// Depending on which body we are, set the contact accordingly.
 
 			if (bodyIndex == 0)
 			{
-				contacts.setInvInertiaScale0(vehicleCollisionInertia);
+				contacts.setInvInertiaScale0((Antigravity == true) ? FMath::Min(vehicleCollisionInertia, antigravityVehicleCollisionInertia) : vehicleCollisionInertia);
 			}
 			else if (bodyIndex == 1)
 			{
-				contacts.setInvInertiaScale1(vehicleCollisionInertia);
+				contacts.setInvInertiaScale1((Antigravity == true) ? FMath::Min(vehicleCollisionInertia, antigravityVehicleCollisionInertia) : vehicleCollisionInertia);
 			}
+
+#pragma endregion VehicleAntiGravity
+
 		}
 	}
 
