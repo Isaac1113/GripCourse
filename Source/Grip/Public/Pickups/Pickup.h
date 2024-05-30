@@ -186,6 +186,45 @@ public:
 		Spawning
 	};
 
+#pragma region PickupPads
+
+	// Is the pickup currently collectible.
+	bool IsCollectible() const
+	{ return (CurrentState == EState::Uncollected); }
+
+	// Event for when the pickup is collected.
+	void OnPickupPadCollected(class ABaseVehicle* vehicle);
+
+	// How long to wait after becoming efficacious to use should a pickup be used by a bot?
+	static float GetEfficacyDelayBeforeUse(EPickupType type, AActor* worldContextObject);
+
+	// The nearest pursuit spline to this pickup.
+	TWeakObjectPtr<UPursuitSplineComponent> NearestPursuitSpline;
+
+protected:
+
+	// Do some initialization when the game is ready to play.
+	virtual void PostInitializeComponents() override;
+
+	// Do some initialization when the game is ready to play.
+	virtual void BeginPlay() override;
+
+	// Do some shutdown when the actor is being destroyed.
+	virtual void EndPlay(const EEndPlayReason::Type endPlayReason) override;
+
+	// Do the regular update tick.
+	virtual void Tick(float deltaSeconds) override;
+
+private:
+
+	// Spawn a new pickup from the pad.
+	bool Spawn();
+
+	// The timer used for managing events on the pickup.
+	float Timer = 0.0f;
+
+#pragma endregion PickupPads
+
 private:
 
 	// The current state of the pickup.

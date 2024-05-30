@@ -760,6 +760,12 @@ void ABaseVehicle::Tick(float deltaSeconds)
 
 #pragma endregion VehicleBasicForces
 
+#pragma region PickupPads
+
+	CollectPickups();
+
+#pragma endregion PickupPads
+
 #pragma region SpeedPads
 
 	CollectSpeedPads();

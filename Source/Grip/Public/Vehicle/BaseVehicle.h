@@ -1880,6 +1880,15 @@ private:
 
 #pragma endregion VehicleBoost
 
+#pragma region PickupPads
+
+private:
+
+	// Collect the pickups overlapping with a vehicle.
+	void CollectPickups();
+
+#pragma endregion PickupPads
+
 #pragma region PickupsAvailable
 
 public:

@@ -147,3 +147,61 @@ bool ABaseVehicle::SpeedBoost(ASpeedPad* speedpad, float amount, float duration,
 }
 
 #pragma endregion SpeedPads
+
+#pragma region PickupPads
+
+/**
+* Collect the pickups overlapping with a vehicle.
+***********************************************************************************/
+
+void ABaseVehicle::CollectPickups()
+{
+	if (GRIP_OBJECT_VALID(VehicleCollision) == true)
+	{
+		TSet<AActor*> collectedActors;
+
+		VehicleCollision->GetOverlappingActors(collectedActors, APickup::StaticClass());
+
+		for (AActor* actor : collectedActors)
+		{
+			APickup* pickup = Cast<APickup>(actor);
+
+			if (pickup->IsCollectible() == true)
+			{
+				if (pickup->Class == EPickupClass::Pickup)
+				{
+					pickup->OnPickupPadCollected(this);
+				}
+				else if (pickup->Class == EPickupClass::Health)
+				{
+					if (RaceState.HitPoints != RaceState.MaxHitPoints)
+					{
+						pickup->OnPickupPadCollected(this);
+
+						RaceState.HitPoints += (RaceState.MaxHitPoints >> 2);
+						RaceState.HitPoints = FMath::Min(RaceState.HitPoints, RaceState.MaxHitPoints);
+
+						HUD.Warning(EHUDWarningSource::HealthPickup, 1.0f, 0.666f);
+					}
+				}
+				else if (pickup->Class == EPickupClass::DoubleDamage)
+				{
+					if (RaceState.DoubleDamage == 0.0f)
+					{
+						pickup->OnPickupPadCollected(this);
+
+						RaceState.DoubleDamage = GRIP_DOUBLE_DAMAGE_SECONDS;
+
+						HUD.Warning(EHUDWarningSource::DoubleDamagePickup, 1.0f, 0.666f);
+					}
+				}
+				else if (pickup->Class == EPickupClass::Collectible)
+				{
+					pickup->OnPickupPadCollected(this);
+				}
+			}
+		}
+	}
+}
+
+#pragma endregion PickupPads
