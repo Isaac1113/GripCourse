@@ -1195,6 +1195,18 @@ void UFlippableSpringArmComponent::TickComponent(float deltaSeconds, enum ELevel
 
 		if (vehicle->IsAIVehicle() == false)
 		{
+
+#pragma region VehicleCamera
+
+			if (BaseOwnerNoSee != vehicle->IsCockpitView())
+			{
+				BaseOwnerNoSee = vehicle->IsCockpitView();
+
+				camera->SetOwnerNoSee(vehicle->VehicleMesh, BaseOwnerNoSee);
+			}
+
+#pragma endregion VehicleCamera
+
 		}
 	}
 
@@ -1304,6 +1316,23 @@ void UFlippableSpringArmComponent::TickComponent(float deltaSeconds, enum ELevel
 	// Now take into account the angle we want to adjust pitch at by for the target length.
 
 	RelativeSocketRotation *= FRotator(OrbitVer - DownAngle, 0.0f, 0.0f).Quaternion();
+
+#pragma region VehicleCamera
+
+	if (camera != nullptr)
+	{
+		camera->RestoreRelativeTransform();
+	}
+
+	UpdateChildTransforms();
+
+	if (camera != nullptr)
+	{
+		camera->UpdateFromComponent();
+	}
+
+#pragma endregion VehicleCamera
+
 }
 
 /**

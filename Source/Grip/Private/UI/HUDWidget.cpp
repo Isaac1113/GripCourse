@@ -412,7 +412,11 @@ FLinearColor UHUDWidgetComponent::GetPickupChargeColour(int32 slotIndex) const
 			return FLinearColor(1.0f, 0.0f, 0.0f, GetFlashingOpacity(true, true));
 		}
 
-		float alpha = 0.0f;
+#pragma region VehiclePickups
+
+		float alpha = vehicle->GetPickupSlotAlpha(slotIndex);
+
+#pragma endregion VehiclePickups
 
 		if (vehicle->GetRaceState().DoubleDamage > 0.0f)
 		{

@@ -80,6 +80,20 @@ ABaseVehicle::ABaseVehicle()
 		Elimination.AlertSound = asset.Object;
 	}
 
+#pragma region PickupTurbo
+
+	{
+		static ConstructorHelpers::FObjectFinder<UClass> asset(TEXT("'/Game/Pickups/PowerUps/TurboBoost/BP_Level1Turbo.BP_Level1Turbo_C'"));
+		Level1TurboBlueprint = (UClass*)asset.Object;
+	}
+
+	{
+		static ConstructorHelpers::FObjectFinder<UClass> asset(TEXT("'/Game/Pickups/PowerUps/TurboBoost/BP_Level2Turbo.BP_Level2Turbo_C'"));
+		Level2TurboBlueprint = (UClass*)asset.Object;
+	}
+
+#pragma endregion PickupTurbo
+
 #pragma region VehicleTeleport
 
 	{
@@ -116,6 +130,55 @@ ABaseVehicle::ABaseVehicle()
 	}
 
 #pragma endregion VehicleSurfaceImpacts
+
+#pragma region VehicleCamera
+
+	{
+		static ConstructorHelpers::FObjectFinder<UMaterialInterface> asset(TEXT("MaterialInstanceConstant'/Game/Vehicles/Materials/MI_RaceCameraMinimal.MI_RaceCameraMinimal'"));
+		CheapCameraMaterial = asset.Object;
+	}
+
+	{
+		static ConstructorHelpers::FObjectFinder<UMaterialInterface> asset(TEXT("MaterialInstanceConstant'/Game/Vehicles/Materials/MI_RaceCameraExpensive.MI_RaceCameraExpensive'"));
+		ExpensiveCameraMaterial = asset.Object;
+	}
+
+#pragma endregion VehicleCamera
+
+#pragma region VehiclePickups
+
+	{
+		static ConstructorHelpers::FObjectFinder<USoundCue> asset(TEXT("SoundCue'/Game/Audio/Sounds/Pickups/Weapons/Missile/A_MissileHomingIndicator_Cue.A_MissileHomingIndicator_Cue'"));
+		HUD.HomingMissileIndicatorSound = asset.Object;
+	}
+
+	{
+		static ConstructorHelpers::FObjectFinder<USoundCue> asset(TEXT("SoundCue'/Game/Audio/Sounds/Pickups/Weapons/Missile/A_MissileHomingIndicatorCritical_Cue.A_MissileHomingIndicatorCritical_Cue'"));
+		HUD.HomingMissileIndicatorCriticalSound = asset.Object;
+	}
+
+	{
+		static ConstructorHelpers::FObjectFinder<USoundCue> asset(TEXT("SoundCue'/Game/Audio/Sounds/Pickups/A_ChargingTone_Cue.A_ChargingTone_Cue'"));
+		HUD.PickupChargingSound = asset.Object;
+	}
+
+	{
+		static ConstructorHelpers::FObjectFinder<USoundCue> asset(TEXT("SoundCue'/Game/Audio/Sounds/Pickups/A_PickupCharged_Cue.A_PickupCharged_Cue'"));
+		HUD.PickupChargedSound = asset.Object;
+	}
+
+	{
+		static ConstructorHelpers::FObjectFinder<USoundCue> asset(TEXT("SoundCue'/Game/Audio/Sounds/Pickups/A_PickupNotChargeable_Cue.A_PickupNotChargeable_Cue'"));
+		HUD.PickupNotChargeableSound = asset.Object;
+	}
+
+	for (FPlayerPickupSlot& pickup : PickupSlots)
+	{
+		pickup.State = EPickupSlotState::Empty;
+		pickup.Type = EPickupType::None;
+	}
+
+#pragma endregion VehiclePickups
 
 	WheelAssignments.Emplace(FWheelAssignment(("F_L_T"), EWheelPlacement::Front, 80.0f, 85.0f, 2.0f, 10.0f));
 	WheelAssignments.Emplace(FWheelAssignment(("F_R_T"), EWheelPlacement::Front, 80.0f, 85.0f, 2.0f, 10.0f));
@@ -205,6 +268,16 @@ void ABaseVehicle::SetupPlayerInputComponent(UInputComponent* inputComponent)
 		inputComponent->BindAction("Boost", IE_Released, this, &ABaseVehicle::BoostUp);
 
 #pragma endregion VehicleBoost
+
+#pragma region VehiclePickups
+
+		inputComponent->BindAction("UsePickup1", IE_Pressed, this, &ABaseVehicle::UsePickup1);
+		inputComponent->BindAction("UsePickup1", IE_Released, this, &ABaseVehicle::ReleasePickup1);
+		inputComponent->BindAction("UsePickup2", IE_Pressed, this, &ABaseVehicle::UsePickup2);
+		inputComponent->BindAction("UsePickup2", IE_Released, this, &ABaseVehicle::ReleasePickup2);
+		inputComponent->BindAction("SwitchTarget", IE_Pressed, this, &ABaseVehicle::SwitchMissileTarget);
+
+#pragma endregion VehiclePickups
 
 #pragma region VehicleSpringArm
 
@@ -595,6 +668,15 @@ void ABaseVehicle::BeginPlay()
 			particles->Template->GetName().Contains(TEXT("Turbo")) == true)
 		{
 			TurboParticleSystems.Emplace(particles);
+
+#pragma region PickupTurbo
+
+			LastTurboAlpha = 0.0f;
+
+			particles->SetFloatParameter("VehicleIonisation", LastTurboAlpha);
+
+#pragma endregion PickupTurbo
+
 		}
 	}
 
@@ -659,6 +741,12 @@ void ABaseVehicle::EndPlay(const EEndPlayReason::Type endPlayReason)
 
 #pragma endregion VehicleSurfaceEffects
 
+#pragma region VehicleHUD
+
+	UnhookPlayerHUD();
+
+#pragma endregion VehicleHUD
+
 	if (PlayGameMode != nullptr)
 	{
 		GRIP_REMOVE_FROM_GAME_MODE_LIST_FROM(Vehicles, PlayGameMode);
@@ -715,6 +803,12 @@ void ABaseVehicle::Tick(float deltaSeconds)
 
 #pragma endregion VehicleTeleport
 
+#pragma region VehicleHUD
+
+	UpdateHUDAnimation(deltaSeconds);
+
+#pragma endregion VehicleHUD
+
 #pragma region AINavigation
 
 	UpdateAI(deltaSeconds);
@@ -738,6 +832,12 @@ void ABaseVehicle::Tick(float deltaSeconds)
 	UpdateVehicleDisorientation(deltaSeconds);
 
 #pragma endregion VehicleSlowTurningRecovery
+
+#pragma region PickupTurbo
+
+	UpdateLightStreaks(deltaSeconds);
+
+#pragma endregion PickupTurbo
 
 #pragma region VehicleControls
 
@@ -789,6 +889,14 @@ void ABaseVehicle::Tick(float deltaSeconds)
 	UpdateSurfaceEffects(deltaSeconds);
 
 #pragma endregion VehicleSurfaceEffects
+
+#pragma region VehiclePickups
+
+	UpdatePickupSlots(deltaSeconds);
+
+	DetermineTargets(deltaSeconds, transform.GetTranslation(), xdirection);
+
+#pragma endregion VehiclePickups
 
 #pragma region VehicleLaunch
 
@@ -4646,6 +4754,58 @@ void ABaseVehicle::BoostOff(bool force)
 
 #pragma endregion VehicleBoost
 
+#pragma region PickupTurbo
+
+/**
+* Update the light streaks for a vehicle.
+***********************************************************************************/
+
+void ABaseVehicle::UpdateLightStreaks(float deltaSeconds)
+{
+	float alphaAmount = Propulsion.TurboThrottle;
+	float lifeTimeAmount = Propulsion.TurboThrottle;
+
+	alphaAmount = FMath::Clamp(alphaAmount, 0.0f, 1.0f);
+	lifeTimeAmount = FMath::Clamp(lifeTimeAmount, 0.0f, 2.5f);
+
+	for (ULightStreakComponent* lightStreak : LightStreaks)
+	{
+		lightStreak->SetGlobalAmount(alphaAmount, lifeTimeAmount);
+
+		if (lightStreak->IsAwake() == true)
+		{
+			ABaseGameMode::WakeComponent(lightStreak);
+		}
+		else
+		{
+			ABaseGameMode::SleepComponent(lightStreak);
+		}
+	}
+
+	alphaAmount = FMath::Clamp(Propulsion.TurboThrottle, 0.0f, 1.0f);
+
+	float angle = FVector::DotProduct(GetVelocityOrFacingDirection(), GetFacingDirection());
+
+	angle = FMathEx::GetRatio(angle, 0.85f, 1.0f);
+
+	float speed = FMathEx::GetRatio(GetSpeedKPH(), 400.0f, 500.0f);
+
+	alphaAmount *= FMath::Min(angle, speed);
+	alphaAmount = FMathEx::GravitateUpToTarget(LastTurboAlpha, alphaAmount, deltaSeconds);
+
+	if (LastTurboAlpha != alphaAmount)
+	{
+		LastTurboAlpha = alphaAmount;
+
+		for (UParticleSystemComponent* turbo : TurboParticleSystems)
+		{
+			turbo->SetFloatParameter("VehicleIonisation", alphaAmount);
+		}
+	}
+}
+
+#pragma endregion PickupTurbo
+
 #pragma region VehicleSpringArm
 
 /**
@@ -5062,6 +5222,153 @@ float ABaseVehicle::GetWrongWayAlpha()
 	return 0.0f;
 }
 
+/**
+* Update the animation on the HUD.
+***********************************************************************************/
+
+void ABaseVehicle::UpdateHUDAnimation(float deltaSeconds)
+{
+	if (HUDWidget != nullptr)
+	{
+		float maxAlpha = GameState->GeneralOptions.HUDBrightnessLevel;
+
+		if (PlayGameMode != nullptr &&
+			PlayGameMode->HUDClass != nullptr)
+		{
+			maxAlpha = FMath::Min(maxAlpha, 0.2f);
+		}
+
+		FLinearColor color(1.0f, 1.0f, 1.0f, maxAlpha);
+
+		APlayerController* controller = Cast<APlayerController>(GetController());
+
+		if (controller != nullptr)
+		{
+			color.A = (1.0f - controller->PlayerCameraManager->FadeAmount) * maxAlpha;
+		}
+
+		if (IsCinematicCameraActive() == true &&
+			GetGameEndedClock() == 0.0f)
+		{
+			color.A = 0.0f;
+		}
+
+		HUDWidget->SetColorAndOpacity(color);
+
+		float hudScale = PlayGameMode->GetHUDScale();
+
+		if (hudScale < 1.0f)
+		{
+			if (hudScale != 0.0f)
+			{
+				float ratio = hudScale;
+
+				ratio = FMath::Sin(ratio * PI * 0.5f);
+
+				HUDWidget->SetRenderScale(FVector2D(0.5f + ratio * 0.5f, 0.5f + ratio * 0.5f));
+			}
+		}
+		else
+		{
+			HUD.ShakeTimer = FMath::Max(0.0f, HUD.ShakeTimer - deltaSeconds);
+
+			HUDWidget->Ignite();
+			HUDWidget->SetRenderScale(FVector2D(1.0f, 1.0f));
+		}
+	}
+}
+
+/**
+* Hookup a HUD for the player.
+***********************************************************************************/
+
+void ABaseVehicle::HookupPlayerHUD()
+{
+	if (PlayGameMode != nullptr)
+	{
+		check(PlayGameMode->SingleScreenWidget != nullptr);
+
+		if (HUD.HUDHooked == false)
+		{
+			if (LocalPlayerIndex >= 0)
+			{
+				HUD.HUDHooked = true;
+
+				APlayerController* controller = Cast<APlayerController>(GetController());
+
+				if (controller != nullptr)
+				{
+					ULocalPlayer* player = controller->GetLocalPlayer();
+
+					int32 x, y;
+					const int32 w = 1920, h = 1080;
+
+					// Get the size of the screen.
+
+					ABaseGameMode::GetGameViewportSize(x, y, controller);
+
+					// If the display itself is super-wide then we can assume the hardware has some horse-power
+					// and always scale the draw-size by width and never try to shrink the height.
+
+					FVector2D canvasSize = FVector2D(w, h);
+
+					// Use height then calculate width.
+
+					x = h * ((float)x / (float)y);
+					y = h;
+
+					canvasSize.X *= ((float)x / (float)w);
+
+					FVector2D size = player->Size;
+					FVector2D origin = player->Origin;
+
+					HUDWidget = PlayGameMode->SingleScreenWidget->HookupPlayerHUD(size * canvasSize, origin * canvasSize);
+
+					if (HUDWidget != nullptr)
+					{
+						HUDWidget->SetupForPlayer(player);
+					}
+
+					TArray<UActorComponent*> components;
+
+					GetComponents(UWidgetComponent::StaticClass(), components);
+
+					for (UActorComponent* component : components)
+					{
+						UWidgetComponent* widget = Cast<UWidgetComponent>(component);
+
+						if (widget != nullptr)
+						{
+							UUserWidget* widgetObject = widget->GetUserWidgetObject();
+							UHUDWidget* hudWidget = Cast<UHUDWidget>(widgetObject);
+
+							if (hudWidget != nullptr)
+							{
+								hudWidget->SetupForPlayer(player);
+							}
+							else if (widgetObject != nullptr)
+							{
+								widgetObject->SetOwningLocalPlayer(player);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+/**
+* Unhook the HUD for the player.
+***********************************************************************************/
+
+void ABaseVehicle::UnhookPlayerHUD()
+{
+	HUD.HUDHooked = false;
+
+	// We should do something here to remove the HUD from the single player widget.
+}
+
 #pragma endregion VehicleHUD
 
 #pragma region ClocksAndTime
@@ -5101,6 +5408,18 @@ void ABaseVehicle::SetAIDriver(bool aiDriver, bool setVehicle, bool setInputMapp
 			AI.SetDrivingMode(EVehicleAIDrivingMode::GeneralManeuvering);
 
 #pragma endregion AIVehicleControl
+
+#pragma region VehiclePickups
+
+			for (FPlayerPickupSlot& pickup : PickupSlots)
+			{
+				if (pickup.State == EPickupSlotState::Idle)
+				{
+					pickup.Timer = 0.0f;
+				}
+			}
+
+#pragma endregion VehiclePickups
 
 #pragma region AINavigation
 
@@ -5371,6 +5690,12 @@ void ABaseVehicle::CompletePostSpawn()
 				}
 			}
 		}
+
+#pragma region VehicleHUD
+
+		HookupPlayerHUD();
+
+#pragma endregion VehicleHUD
 
 #pragma region AIVehicleControl
 

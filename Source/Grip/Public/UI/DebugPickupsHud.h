@@ -28,4 +28,15 @@ class ADebugPickupsHUD : public ADebugHUD
 	GENERATED_BODY()
 
 public:
+
+#pragma region VehiclePickups
+
+	// Draw the HUD.
+	virtual void DrawHUD() override;
+
+	// Draw a pickup slot for the HUD.
+	void DrawSlot(int32 slotIndex, FPlayerPickupSlot& slot, ABaseVehicle* vehicle);
+
+#pragma endregion VehiclePickups
+
 };

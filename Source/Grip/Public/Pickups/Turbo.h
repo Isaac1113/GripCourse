@@ -73,6 +73,36 @@ public:
 	UPROPERTY(EditAnywhere, Category = Turbo)
 		USoundCue* ActiveSoundNonPlayer = nullptr;
 
+#pragma region PickupTurbo
+
+	// Activate the pickup.
+	virtual void ActivatePickup(class ABaseVehicle* launchVehicle, int32 pickupSlot, EPickupActivation activation, bool charged) override;
+
+	// Is the turbo currently active?
+	bool IsActive() const
+	{ return Timer < Duration; }
+
+protected:
+
+	// Do the regular update tick.
+	virtual void Tick(float deltaSeconds) override;
+
+private:
+
+	// Timer used for the lifetime of the turbo.
+	float Timer = 0.0f;
+
+	// The duration of the turbo.
+	float Duration = 5.0f;
+
+	// Scale used to normalize the boost available to between 0 and 1.
+	float NormalizeScale = 1.0f;
+
+	// Has the activate sound been played?
+	bool ActivateSoundPlayed = false;
+
+#pragma endregion PickupTurbo
+
 	// Looped audio for then the turbo is active.
 	UPROPERTY(Transient)
 		UAudioComponent* ActiveAudio = nullptr;

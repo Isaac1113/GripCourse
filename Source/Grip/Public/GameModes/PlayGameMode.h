@@ -776,6 +776,60 @@ private:
 
 #pragma endregion VehicleAudio
 
+#pragma region VehiclePickups
+
+public:
+
+	// Record the activation of a pickup.
+	void AddPickupType(EPickupType type)
+	{ NumPickupTypes[(int32)type]++; SetPickupLastUsed(type); }
+
+	// Record the deactivation of a pickup.
+	void RemovePickupType(EPickupType type)
+	{ NumPickupTypes[(int32)type]--; }
+
+	// Get when a particular pickup type was last used.
+	float PickupLastUsed(EPickupType pickupType) const
+	{ return LastUsedPickupTypes[(int32)pickupType]; }
+
+	// Set when a particular pickup type was last used.
+	void SetPickupLastUsed(EPickupType type)
+	{ LastUsedPickupTypes[(int32)type] = GetRealTimeGameClock(); }
+
+	// Get the number of pickups currently present for a given pickup type.
+	int32 NumPickupsPresent(EPickupType pickupType);
+
+	// Should a vehicle be fighting another vehicle or just try to catchup with the humans?
+	// -1 means no, 0 mean yes, +1 mean hell yeah!
+	float VehicleShouldFightVehicle(ABaseVehicle* aggressor, ABaseVehicle* victim);
+
+	// Should a pickup be used?
+	bool ShouldUsePickup(bool isBot, const FPlayerPickupSlot* pickup, float aggressionRatio) const;
+
+	// Should an offensive pickup be used?
+	// weight is 0 for perfect target and 1 for worst-case target, < 0 means don't target ever.
+	// aggressionRatio from VehicleShouldFightVehicle, -1 to 1 meaning using weapons, 1 use as soon as possible, -1 meaning don't use any time soon.
+	float ScaleOffensivePickupWeight(bool isBot, float weight, const FPlayerPickupSlot* pickup, float aggressionRatio) const;
+
+	// Should a defensive pickup be used?
+	// weight is 0 for perfect defensive posture and 1 for worst-case posture.
+	// aggressionRatio from VehicleShouldFightVehicle, 0 to 1 meaning using pickups, 1 use as soon as possible.
+	float ScaleDefensivePickupWeight(bool isBot, float weight, const FPlayerPickupSlot* pickup, float aggressionRatio) const;
+
+	// Get the relative pickup index between 0 and 2 for a particular vehicle.
+	// 0 is winning and 2 is losing.
+	int32 GetPlayerRacePickupIndex(ABaseVehicle* vehicle);
+
+private:
+
+	// The number of pickups of each type currently present.
+	TArray<int32> NumPickupTypes;
+
+	// The time each pickup type was last used.
+	TArray<float> LastUsedPickupTypes;
+
+#pragma endregion VehiclePickups
+
 protected:
 
 	// Do some post initialization just before the game is ready to play.

@@ -29,7 +29,146 @@ DEFINE_LOG_CATEGORY_STATIC(GripLogPickups, Warning, All);
 
 int32 ABaseVehicle::GivePickup(EPickupType type, int32 pickupSlot, bool fromTrack)
 {
-	return -1;
+
+#pragma region VehiclePickups
+
+	if (type == EPickupType::None)
+	{
+		return -1;
+	}
+
+	if (pickupSlot >= 0 &&
+		PickupSlots[pickupSlot].Type == type &&
+		PickupSlots[pickupSlot].State == EPickupSlotState::Idle)
+	{
+		// We already know about this so don't bother doing anything more.
+		// This is normally for network play so we don't repeat ourselves.
+
+		return pickupSlot;
+	}
+
+	if (pickupSlot < 0)
+	{
+		for (pickupSlot = 0; pickupSlot < NumPickups; pickupSlot++)
+		{
+			if (PickupSlots[pickupSlot].State == EPickupSlotState::Empty)
+			{
+				break;
+			}
+		}
+	}
+
+	FDifficultyCharacteristics& difficulty = PlayGameMode->GetDifficultyCharacteristics();
+	FPickupUseCharacteristics& useCharacteristics = difficulty.PickupUseCharacteristics.Race;
+
+	float useDelay = useCharacteristics.PickupUseAfter + FMath::RandRange(-useCharacteristics.PickupUseAfter * 0.25f, useCharacteristics.PickupUseAfter * 0.25f);
+	float useBefore = useCharacteristics.PickupUseBefore + FMath::RandRange(-useCharacteristics.PickupUseBefore * 0.25f, useCharacteristics.PickupUseBefore * 0.25f);
+	float dumpAfter = useCharacteristics.PickupDumpAfter + FMath::RandRange(-useCharacteristics.PickupDumpAfter * 0.25f, useCharacteristics.PickupDumpAfter * 0.25f);
+
+	if (useBefore < KINDA_SMALL_NUMBER)
+	{
+		useBefore = 0.0f;
+	}
+	else if (useBefore <= useDelay)
+	{
+		useBefore = useDelay + 5.0f;
+	}
+
+	// Always dump shields and Gatling guns if we can't use them in a reasonable time-frame.
+	// And no enforced delay for shields.
+
+	if (dumpAfter < KINDA_SMALL_NUMBER)
+	{
+		switch (type)
+		{
+		default:
+			dumpAfter = 0.0f;
+			break;
+
+		case EPickupType::Shield:
+			useBefore = 0.0f;
+			// Deliberate lack of break;
+
+		case EPickupType::GatlingGun:
+			dumpAfter = useBefore * 2.0f;
+			break;
+		}
+	}
+
+	if (dumpAfter != 0.0f &&
+		dumpAfter < useBefore)
+	{
+		dumpAfter = useBefore;
+	}
+
+	if (pickupSlot < NumPickups)
+	{
+		FPlayerPickupSlot& playerPickupSlot = PickupSlots[pickupSlot];
+
+		playerPickupSlot.State = EPickupSlotState::Idle;
+		playerPickupSlot.Activation = EPickupActivation::None;
+		playerPickupSlot.Type = type;
+		playerPickupSlot.Timer = 0.0f;
+		playerPickupSlot.EfficacyTimer = 0.0f;
+		playerPickupSlot.UseAfter = useDelay;
+		playerPickupSlot.UseBefore = useBefore;
+		playerPickupSlot.DumpAfter = dumpAfter;
+		playerPickupSlot.PickupCount = PickupCount++;
+		playerPickupSlot.AutoUse = false;
+		playerPickupSlot.BotWillCharge = false;
+		playerPickupSlot.BotWillTargetHuman = false;
+
+		if (HasAIDriver() == true)
+		{
+			int32 difficultyLevel = GameState->GetDifficultyLevel();
+
+			switch (difficultyLevel)
+			{
+			case 1:
+				playerPickupSlot.BotWillCharge = (FMath::Rand() % 7) == 0;
+				break;
+			case 2:
+				playerPickupSlot.BotWillCharge = (FMath::Rand() % 3) == 0;
+				break;
+			case 3:
+				playerPickupSlot.BotWillCharge = (FMath::Rand() % 2) == 0;
+				break;
+			case 0:
+				break;
+			}
+
+			if (type == EPickupType::TurboBoost)
+			{
+				// Too difficult for bots to handle.
+
+				playerPickupSlot.BotWillCharge = false;
+			}
+
+			if (IsAIVehicle() == true &&
+				RaceState.PlayerCompletionState < EPlayerCompletionState::Complete)
+			{
+				float bias = useCharacteristics.HumanAttackBias;
+
+				if (bias > KINDA_SMALL_NUMBER)
+				{
+					float p0 = (float)PlayGameMode->GetNumOpponents(true) / (float)PlayGameMode->GetNumOpponents();
+
+					playerPickupSlot.BotWillTargetHuman = FMath::FRand() < FMath::Lerp(p0, 1.0f, bias);
+				}
+			}
+		}
+
+		PlayGameMode->SetPickupLastUsed(type);
+	}
+	else
+	{
+		return -1;
+	}
+
+	return pickupSlot;
+
+#pragma endregion VehiclePickups
+
 }
 
 /**
@@ -170,7 +309,30 @@ void ABaseVehicle::CollectPickups()
 			{
 				if (pickup->Class == EPickupClass::Pickup)
 				{
-					pickup->OnPickupPadCollected(this);
+
+#pragma region VehiclePickups
+
+					for (int32 slotIndex = 0; slotIndex < NumPickups; slotIndex++)
+					{
+						if (PickupSlots[slotIndex].State == EPickupSlotState::Empty)
+						{
+							pickup->OnPickupPadCollected(this);
+
+							EPickupType pickupType = DeterminePickup(pickup);
+
+							if (pickupType != EPickupType::None)
+							{
+								GivePickup(pickupType, slotIndex, true);
+
+								HUD.Warning(EHUDWarningSource::StandardPickup, 1.0f, 0.666f);
+							}
+
+							break;
+						}
+					}
+
+#pragma endregion VehiclePickups
+
 				}
 				else if (pickup->Class == EPickupClass::Health)
 				{
@@ -205,3 +367,920 @@ void ABaseVehicle::CollectPickups()
 }
 
 #pragma endregion PickupPads
+
+#pragma region VehiclePickups
+
+/**
+* Update the pickup slots.
+***********************************************************************************/
+
+void ABaseVehicle::UpdatePickupSlots(float deltaSeconds)
+{
+	bool charging = false;
+
+	for (int32 i = 0; i < NumPickups; i++)
+	{
+		PickupSlots[i].Timer += deltaSeconds;
+
+		if (PickupSlots[i].AutoUse == true)
+		{
+			UsePickup(i, EPickupActivation::Released, AI.BotDriver);
+		}
+
+		if (AI.BotDriver == true &&
+			PickupSlots[i].BotWillTargetHuman == true)
+		{
+			// Make sure we have some humans left to hit.
+
+			bool haveHumans = false;
+
+			GRIP_GAME_MODE_LIST_FROM(GetVehicles(), vehicles, PlayGameMode);
+
+			for (ABaseVehicle* vehicle : vehicles)
+			{
+				if (vehicle->IsAIVehicle() == false &&
+					vehicle->IsVehicleDestroyed() == false)
+				{
+					haveHumans = true;
+					break;
+				}
+			}
+
+			if (haveHumans == false)
+			{
+				PickupSlots[i].BotWillTargetHuman = false;
+			}
+		}
+
+		float rate = 0.333f;
+
+		if (PickupSlots[i].IsCharged() == false)
+		{
+			if (PickupSlots[i].IsCharging(false) == true &&
+				PickupSlots[i].HookTimer < PickupHookTime)
+			{
+				PickupSlots[i].HookTimer += deltaSeconds;
+
+				if (PickupSlots[i].HookTimer >= PickupHookTime)
+				{
+					if (PickupSlots[i ^ 1].State == EPickupSlotState::Idle &&
+						PickupSlots[i ^ 1].Type != EPickupType::None &&
+						PickupSlots[i ^ 1].Timer > 0.0f)
+					{
+						if (IsHumanPlayer() == true &&
+							IsCinematicCameraActive() == false)
+						{
+							PickupChargingSoundComponent = UGameplayStatics::SpawnSound2D(this, HUD.PickupChargingSound);
+						}
+					}
+					else
+					{
+						PickupSlots[i].CancelCharging();
+
+						if (IsHumanPlayer() == true &&
+							IsCinematicCameraActive() == false)
+						{
+							ClientPlaySound(HUD.PickupNotChargeableSound);
+						}
+					}
+
+					if (AI.BotDriver == true &&
+						PickupSlots[i].IsCharging(false) == true)
+					{
+						// Release the charging ready for future firing if an AI driver.
+
+						UsePickup(i, EPickupActivation::Released, true);
+					}
+				}
+			}
+
+			charging |= PickupSlots[i].IsCharging(false);
+
+			if (PickupSlots[i].IsCharging(true) == true &&
+				PickupSlots[i].ChargeTimer != 1.0f)
+			{
+				PickupSlots[i].ChargeTimer += deltaSeconds * rate;
+
+				if (PickupSlots[i].ChargeTimer >= 1.0f)
+				{
+					PickupSlots[i].ChargingState = EPickupSlotChargingState::Charged;
+					PickupSlots[i].ChargeTimer = 1.0f;
+
+					ReleasePickupSlot(i ^ 1, false);
+
+					if (IsHumanPlayer() == true &&
+						IsCinematicCameraActive() == false)
+					{
+						ClientPlaySound(HUD.PickupChargedSound);
+					}
+				}
+			}
+		}
+
+		if (PickupSlots[i].State == EPickupSlotState::Used)
+		{
+			// Note that pickups can't be collected if the slot isn't empty, so your change here
+			// will allow AI or remote vehicles to collect pickups more swiftly after use than
+			// the local human players.
+
+			if (GetPickupSlotAlpha(i) < 0.001f)
+			{
+				PickupSlots[i].State = EPickupSlotState::Empty;
+				PickupSlots[i].Type = EPickupType::None;
+				PickupSlots[i].ChargingState = EPickupSlotChargingState::None;
+				PickupSlots[i].ChargeTimer = 0.0f;
+			}
+		}
+	}
+
+	if (charging == false &&
+		PickupChargingSoundComponent != nullptr &&
+		PickupChargingSoundComponent->IsPlaying() == true)
+	{
+		PickupChargingSoundComponent->Stop();
+	}
+}
+
+/**
+* Start using a pickup.
+***********************************************************************************/
+
+void ABaseVehicle::BeginUsePickup(int32 pickupSlot, bool bot, bool force)
+{
+	if ((pickupSlot >= 0) &&
+		(force == true || (PlayGameMode != nullptr && PlayGameMode->PastGameSequenceStart() == true)))
+	{
+		if (bot != AI.BotDriver ||
+			IsVehicleDestroyed() == true)
+		{
+			return;
+		}
+
+		FPlayerPickupSlot& playerPickupSlot = PickupSlots[pickupSlot];
+
+		if (playerPickupSlot.State == EPickupSlotState::Idle &&
+			playerPickupSlot.Type != EPickupType::None &&
+			playerPickupSlot.Timer > 0.0f)
+		{
+			if (playerPickupSlot.ChargingState < EPickupSlotChargingState::Charged)
+			{
+				playerPickupSlot.ChargeTimer = 0.0f;
+				playerPickupSlot.HookTimer = 0.0f;
+
+				if (playerPickupSlot.ChargingState == EPickupSlotChargingState::Charging)
+				{
+					playerPickupSlot.ChargingState = EPickupSlotChargingState::None;
+				}
+				else
+				{
+					playerPickupSlot.ChargingState = EPickupSlotChargingState::Charging;
+				}
+			}
+
+			UsePickup(pickupSlot, EPickupActivation::Pressed, bot);
+		}
+	}
+}
+
+/**
+* Use a pickup.
+***********************************************************************************/
+
+void ABaseVehicle::UsePickup(int32 pickupSlot, EPickupActivation activation, bool bot)
+{
+	if (bot != AI.BotDriver)
+	{
+		// Don't allow players to control AI vehicles.
+
+		return;
+	}
+
+	FPlayerPickupSlot& playerPickupSlot = PickupSlots[pickupSlot];
+
+	if (IsVehicleDestroyed() == true)
+	{
+		// Cancel the charging if we're dead.
+
+		if (playerPickupSlot.IsCharging(false) == true)
+		{
+			playerPickupSlot.CancelCharging();
+
+			return;
+		}
+	}
+
+	if (PickupSlots[pickupSlot ^ 1].IsCharging(false) == true)
+	{
+		// Cancel charging of the other pickup if we're trying to use this one.
+
+		PickupSlots[pickupSlot ^ 1].CancelCharging();
+	}
+
+	bool slotIdle = (playerPickupSlot.State == EPickupSlotState::Idle);
+	bool slotReady = slotIdle == true && playerPickupSlot.Type != EPickupType::None && (playerPickupSlot.Timer > 0.0f);
+	bool prime = activation == EPickupActivation::Pressed && slotReady == true;
+	bool release = activation != EPickupActivation::Pressed && ((playerPickupSlot.Activation == EPickupActivation::None && slotReady == true) || playerPickupSlot.Activation == EPickupActivation::Pressed);
+
+	if (prime == true)
+	{
+		if (playerPickupSlot.IsCharged() == false &&
+			playerPickupSlot.HookTimer >= PickupHookTime &&
+			playerPickupSlot.Activation == EPickupActivation::None)
+		{
+			playerPickupSlot.CancelCharging();
+		}
+
+		if (playerPickupSlot.ChargingState == EPickupSlotChargingState::Charged)
+		{
+			// Prime the pickup if it's been charged.
+
+			playerPickupSlot.ChargingState = EPickupSlotChargingState::Primed;
+		}
+
+		playerPickupSlot.Activation = EPickupActivation::Pressed;
+	}
+	else if (release == true)
+	{
+		switch (playerPickupSlot.ChargingState)
+		{
+		case EPickupSlotChargingState::Charging:
+			if (playerPickupSlot.HookTimer >= PickupHookTime)
+			{
+				// Do nothing if we're into the charging sequence now.
+
+				return;
+			}
+
+			// Otherwise just fall through and use the pickup as normal, uncharged.
+
+			break;
+
+		case EPickupSlotChargingState::Charged:
+			// It's charged, but not primed, so do nothing.
+			return;
+
+		case EPickupSlotChargingState::Primed:
+			// It's charged and primed, so fall through and use the pickup.
+			break;
+		}
+
+		if (playerPickupSlot.IsCharged() == false)
+		{
+			playerPickupSlot.CancelCharging();
+		}
+
+#pragma region PickupTurbo
+
+		FActorSpawnParameters spawnParams;
+
+		spawnParams.Owner = this;
+		spawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		switch (playerPickupSlot.Type)
+		{
+		case EPickupType::TurboBoost:
+		{
+			if (release == true)
+			{
+				if (GetSpeedKPH() > 100.0f &&
+					IsUsingTurbo() == false &&
+					Control.ThrottleInput >= 0.5f)
+				{
+					ATurbo* turbo = nullptr;
+
+					if (playerPickupSlot.IsCharged() == true)
+					{
+						if (Level2TurboBlueprint != nullptr)
+						{
+							turbo = GetWorld()->SpawnActor<ATurbo>(Level2TurboBlueprint, VehicleMesh->GetComponentLocation(), VehicleMesh->GetComponentRotation(), spawnParams);
+						}
+					}
+					else
+					{
+						if (Level1TurboBlueprint != nullptr)
+						{
+							turbo = GetWorld()->SpawnActor<ATurbo>(Level1TurboBlueprint, VehicleMesh->GetComponentLocation(), VehicleMesh->GetComponentRotation(), spawnParams);
+						}
+					}
+
+					if (GRIP_OBJECT_VALID(turbo) == true)
+					{
+						playerPickupSlot.Activation = activation;
+
+						turbo->ActivatePickup(this, pickupSlot, activation, playerPickupSlot.IsCharged());
+
+						Propulsion.RaiseFrontAchieved = 0.0f;
+
+						playerPickupSlot.Pickup = turbo;
+						playerPickupSlot.Timer = 0.0f;
+						playerPickupSlot.State = EPickupSlotState::Active;
+
+						FGameEvent gameEvent;
+
+						gameEvent.LaunchVehicleIndex = VehicleIndex;
+						gameEvent.TargetVehicleIndex = -1;
+						gameEvent.PickupUsed = playerPickupSlot.Type;
+						gameEvent.PickupUsedWasCharged = playerPickupSlot.IsCharged();
+						gameEvent.EventType = EGameEventType::Used;
+
+						PlayGameMode->AddGameEvent(gameEvent);
+					}
+				}
+				else
+				{
+					PlayDeniedSound();
+				}
+			}
+		}
+		break;
+
+		default:
+			break;
+		}
+
+#pragma endregion PickupTurbo
+
+	}
+}
+
+/**
+* Determine which pickup to give to a vehicle.
+***********************************************************************************/
+
+EPickupType ABaseVehicle::DeterminePickup(APickup* pickup)
+{
+	if (pickup->GivePickup == EPickupType::None)
+	{
+		return pickup->GivePickup;
+	}
+
+	EPickupType pickupType = EPickupType::None;
+
+	if (pickup->GivePickup >= EPickupType::Num)
+	{
+		pickup->GivePickup = EPickupType::Random;
+	}
+
+	if (pickup->GivePickup != EPickupType::Random)
+	{
+		if (pickup->GivePickup < EPickupType::Num)
+		{
+			pickupType = pickup->GivePickup;
+		}
+		else
+		{
+			pickup->GivePickup = EPickupType::Random;
+		}
+	}
+
+	if (pickup->GivePickup == EPickupType::Random)
+	{
+		// Dimensions are rough race position (0 - 2 (0 is winning and 2 is losing)), probability.
+
+		const int32 raceSections = 3;
+
+		static float raceProbabilities[raceSections][(int32)EPickupType::Num];
+
+		if (ProbabilitiesInitialized == false)
+		{
+			// ProbabilitiesInitialized is set to false when each vehicle calls BeginPlay.
+			// So this initialization is guaranteed to happen at the start of every race.
+
+			ProbabilitiesInitialized = true;
+
+			FPickupAssignmentRatios* raceRow = nullptr;
+			FDifficultyCharacteristics& difficulty = PlayGameMode->GetDifficultyCharacteristics();
+
+			for (int32 section = 0; section < raceSections; section++)
+			{
+				switch (section)
+				{
+				default:
+					raceRow = &difficulty.PickupAssignmentRatios.Race.Leading;
+					break;
+				case 1:
+					raceRow = &difficulty.PickupAssignmentRatios.Race.Central;
+					break;
+				case 2:
+					raceRow = &difficulty.PickupAssignmentRatios.Race.Trailing;
+					break;
+				}
+
+				// Zero and set the probabilities from the play game mode blueprint.
+
+				for (int32 i = 0; i < (int32)EPickupType::Num; i++)
+				{
+					raceProbabilities[section][i] = 0.0f;
+				}
+
+#pragma region PickupTurbo
+
+				raceProbabilities[section][(int32)EPickupType::TurboBoost] = raceRow->TurboBoost;
+
+#pragma endregion PickupTurbo
+
+			}
+		}
+
+		bool valid = false;
+		int32 attempts = 0;
+
+		// Use the missile for now.
+
+		pickupType = EPickupType::HomingMissile;
+
+		int32 positionIndex = (PlayGameMode != nullptr) ? PlayGameMode->GetPlayerRacePickupIndex(this) : 0;
+		float* probabilities = &raceProbabilities[positionIndex][0];
+
+		// Ensure we have a pickup array for each of the race sections.
+
+		while (QueuedPickups.Num() < raceSections)
+		{
+			QueuedPickups.Emplace(TArray<EPickupType>());
+		}
+
+		TArray<EPickupType>& queuedPickups = QueuedPickups[positionIndex];
+
+		// Attempts check just to ensure we don't get stiffed by the criteria tying us up in knots.
+
+		while (valid == false && attempts++ < 100)
+		{
+			if (queuedPickups.Num() == 0)
+			{
+				// If we have no pickups in our array for this position index, then fill it up
+				// ready for use. This can happen multiple times in an event as the array is
+				// drained when you collect a pickup from it.
+
+				TArray<EPickupType> orderedPickups;
+
+				// So first fill the array with a while bunch of pickups according how often
+				// we've been told they're to be collected by the play game mode blueprint.
+
+				for (int32 i = 0; i < (int32)EPickupType::Num; i++)
+				{
+					int32 numChances = FMath::CeilToInt(probabilities[i]);
+
+					for (int32 j = 0; j < numChances; j++)
+					{
+						orderedPickups.Emplace((EPickupType)i);
+					}
+				}
+
+				// Shuffle the ordered list of pickups to randomize them and place them
+				// into queuedPickups.
+
+				queuedPickups.Reserve(orderedPickups.Num());
+
+				while (orderedPickups.Num() > 0)
+				{
+					int32 index = FMath::Rand() % orderedPickups.Num();
+
+					queuedPickups.Emplace(orderedPickups[index]);
+
+					orderedPickups.RemoveAt(index, 1, false);
+				}
+			}
+
+			// Collect the pickup from the end of the queue.
+
+			pickupType = queuedPickups[queuedPickups.Num() - 1];
+			queuedPickups.RemoveAt(queuedPickups.Num() - 1, 1, false);
+
+			if (VehicleIndex == 0)
+			{
+				UE_LOG(GripLogPickups, Log, TEXT("Attempting to give pickup %d for position index %d"), (int32)pickupType, positionIndex);
+			}
+
+			switch (pickupType)
+			{
+			default:
+				valid = true;
+				break;
+
+			case EPickupType::Shield:
+				// Can't collect a pickup if you already have one or this vehicle somehow isn't setup for a shield.
+				valid = (HasPickup(pickupType) == false && VehicleShield != nullptr);
+				break;
+
+			case EPickupType::GatlingGun:
+				// Can't collect a pickup if this vehicle somehow isn't setup for a gun.
+				valid = (VehicleGun != nullptr);
+				break;
+			}
+
+			if (valid == false &&
+				VehicleIndex == 0)
+			{
+				UE_LOG(GripLogPickups, Log, TEXT("Rejected pickup %d because it wasn't valid right now"), (int32)pickupType);
+			}
+
+			if (valid == true)
+			{
+				int32 maxRepeat = 2;
+				int32 maxPresent = 0;
+				float minSeconds = 0.0f;
+
+				FDifficultyCharacteristics& difficulty = PlayGameMode->GetDifficultyCharacteristics();
+				FPickupAssignmentMaximums& table = difficulty.PickupAssignmentRatios.Race.PickupMaximums;
+
+				switch (pickupType)
+				{
+				case EPickupType::Shield:
+					maxRepeat = table.ShieldMaxRepeat;
+					maxPresent = table.ShieldMaxPresent;
+					minSeconds = table.ShieldMinSeconds;
+					break;
+				case EPickupType::TurboBoost:
+					maxRepeat = table.TurboBoostMaxRepeat;
+					maxPresent = table.TurboBoostMaxPresent;
+					minSeconds = table.TurboBoostMinSeconds;
+					break;
+				case EPickupType::HomingMissile:
+					maxRepeat = table.HomingMissileMaxRepeat;
+					maxPresent = table.HomingMissileMaxPresent;
+					minSeconds = table.HomingMissileMinSeconds;
+					break;
+				case EPickupType::GatlingGun:
+					maxRepeat = table.GatlingGunMaxRepeat;
+					maxPresent = table.GatlingGunMaxPresent;
+					minSeconds = table.GatlingGunMinSeconds;
+					break;
+				}
+
+				if (minSeconds != 0.0f &&
+					PlayGameMode->GetRealTimeGameClock() - PlayGameMode->PickupLastUsed(pickupType) < minSeconds)
+				{
+					// Don't give a pickup if one has already been used within the time-frame we've been given for minimum reuse.
+
+					if (VehicleIndex == 0)
+					{
+						UE_LOG(GripLogPickups, Log, TEXT("Rejected pickup %d because it's not been long enough since the last one"), (int32)pickupType);
+					}
+
+					valid = false;
+				}
+
+				if (valid == true &&
+					maxPresent > 0 &&
+					PlayGameMode->NumPickupsPresent(pickupType) >= maxPresent)
+				{
+					// Don't give a pickup if we've already got too many of them in the world.
+
+					if (VehicleIndex == 0)
+					{
+						UE_LOG(GripLogPickups, Log, TEXT("Rejected pickup %d because there is already too many present"), (int32)pickupType);
+					}
+
+					valid = false;
+				}
+
+				if (valid == true &&
+					LastPickupGiven == pickupType)
+				{
+					int32 repeated = LastPickupRepeatCount;
+
+					// This takes into account the "other" slot if we keep filling / using one particular slot.
+
+					for (FPlayerPickupSlot& slot : PickupSlots)
+					{
+						if (slot.Type == pickupType &&
+							slot.State != EPickupSlotState::Empty &&
+							slot.PickupCount < PickupCount - maxRepeat)
+						{
+							repeated++;
+						}
+					}
+
+					if (repeated >= maxRepeat)
+					{
+						if (VehicleIndex == 0)
+						{
+							UE_LOG(GripLogPickups, Log, TEXT("Rejected pickup %d because it's been repeated too many times"), (int32)pickupType);
+						}
+
+						valid = false;
+					}
+				}
+			}
+		}
+
+		if (valid == false)
+		{
+			// If we somehow couldn't determine a valid pickup then just give a turbo boost by default.
+
+			pickupType = EPickupType::TurboBoost;
+		}
+
+		if (VehicleIndex == 0)
+		{
+			UE_LOG(GripLogPickups, Log, TEXT("Given pickup %d"), (int32)pickupType);
+		}
+	}
+
+	if (LastPickupGiven == pickupType)
+	{
+		LastPickupRepeatCount++;
+	}
+	else
+	{
+		LastPickupGiven = pickupType;
+		LastPickupRepeatCount = 1;
+	}
+
+	return pickupType;
+}
+
+/**
+* Force a particular pickup to a vehicle.
+***********************************************************************************/
+
+void ABaseVehicle::ForcePickup(EPickupType type, int32 pickupSlot)
+{
+	PickupSlots[pickupSlot].State = EPickupSlotState::Idle;
+	PickupSlots[pickupSlot].Activation = EPickupActivation::None;
+	PickupSlots[pickupSlot].Type = type;
+	PickupSlots[pickupSlot].AutoUse = false;
+}
+
+/**
+* Determine the targets.
+***********************************************************************************/
+
+void ABaseVehicle::DetermineTargets(float deltaSeconds, const FVector& location, const FVector& direction)
+{
+	if (AI.BotVehicle == false)
+	{
+		for (int32 pickupSlot = 0; pickupSlot < 2; pickupSlot++)
+		{
+			// If the current target has disappeared from the scene then forget about it.
+
+			if (HUD.CurrentMissileTargetIsValid(pickupSlot) == false)
+			{
+				HUD.CurrentMissileTarget[pickupSlot] = -1;
+			}
+
+			TArray<TWeakObjectPtr<AActor>> targets;
+
+			AActor* missileTarget = HUD.GetCurrentMissileTargetActor(pickupSlot);
+
+			HUD.CurrentMissileTarget[pickupSlot] = -1;
+
+			if (PickupSlots[pickupSlot].State == EPickupSlotState::Idle)
+			{
+				float weight = 0.0f;
+			}
+
+			if (missileTarget == nullptr &&
+				targets.Num() > 0)
+			{
+				missileTarget = targets[0].Get();
+			}
+
+			HUD.SwitchTargetTimer -= deltaSeconds * 10.0f;
+			HUD.SwitchTargetTimer = FMath::Max(0.0f, HUD.SwitchTargetTimer);
+
+			if (targets.Num() == 0)
+			{
+				HUD.PickupTargets[pickupSlot].Empty();
+			}
+			else
+			{
+				// Update all of the missile targets.
+
+				// Remove old targets.
+
+				for (int32 i = 0; i < HUD.PickupTargets[pickupSlot].Num(); i++)
+				{
+					bool found = false;
+
+					for (int32 j = 0; j < targets.Num(); j++)
+					{
+						if (HUD.PickupTargets[pickupSlot][i].Target.Get() == targets[j].Get())
+						{
+							found = true;
+							break;
+						}
+					}
+
+					if (found == false)
+					{
+						HUD.PickupTargets[pickupSlot].RemoveAt(i--, 1, false);
+					}
+				}
+
+				// Add new targets.
+
+				for (int32 j = 0; j < targets.Num(); j++)
+				{
+					if (GRIP_OBJECT_VALID(targets[j]) == true)
+					{
+						bool found = false;
+
+						for (int32 i = 0; i < HUD.PickupTargets[pickupSlot].Num(); i++)
+						{
+							if (HUD.PickupTargets[pickupSlot][i].Target.Get() == targets[j].Get())
+							{
+								found = true;
+								break;
+							}
+						}
+
+						if (found == false)
+						{
+							ABaseVehicle* vehicle = Cast<ABaseVehicle>(targets[j].Get());
+
+							HUD.PickupTargets[pickupSlot].Emplace(FHUDTarget(targets[j], vehicle != nullptr));
+						}
+					}
+				}
+
+				// Sort the targets by address.
+
+				HUD.PickupTargets[pickupSlot].Sort([] (const FHUDTarget& object1, const FHUDTarget& object2)
+					{
+						return (uint64)object1.Target.Get() < (uint64)object2.Target.Get();
+					});
+
+				for (int32 i = 0; i < HUD.PickupTargets[pickupSlot].Num(); i++)
+				{
+					HUD.PickupTargets[pickupSlot][i].TargetTimer += deltaSeconds;
+					HUD.PickupTargets[pickupSlot][i].TargetTimer = FMath::Min(1.0f, HUD.PickupTargets[pickupSlot][i].TargetTimer);
+				}
+			}
+
+			bool findThreats = true;
+
+			if (findThreats == true)
+			{
+				// Update all of the mine targets.
+
+				targets.Empty(16);
+
+				// Remove old targets.
+
+				for (int32 i = 0; i < HUD.ThreatTargets.Num(); i++)
+				{
+					bool found = false;
+
+					for (int32 j = 0; j < targets.Num(); j++)
+					{
+						if (HUD.ThreatTargets[i].Target.Get() == targets[j].Get())
+						{
+							found = true;
+							break;
+						}
+					}
+
+					if (found == false)
+					{
+						HUD.ThreatTargets.RemoveAt(i--, 1, false);
+					}
+				}
+
+				// Add new targets.
+
+				for (int32 j = 0; j < targets.Num(); j++)
+				{
+					bool found = false;
+
+					for (int32 i = 0; i < HUD.ThreatTargets.Num(); i++)
+					{
+						if (HUD.ThreatTargets[i].Target.Get() == targets[j].Get())
+						{
+							found = true;
+							break;
+						}
+					}
+
+					if (found == false)
+					{
+						HUD.ThreatTargets.Emplace(FHUDTarget(targets[j], false));
+					}
+				}
+
+				for (int32 i = 0; i < HUD.ThreatTargets.Num(); i++)
+				{
+					HUD.ThreatTargets[i].TargetTimer += deltaSeconds;
+					HUD.ThreatTargets[i].TargetTimer = FMath::Min(1.0f, HUD.ThreatTargets[i].TargetTimer);
+				}
+			}
+		}
+
+		// If we have two pickups of the same type, ensure the second pickup isn't targeting the same target
+		// as the first where possible.
+	}
+}
+
+/**
+* Get the alpha for a pickup slot.
+***********************************************************************************/
+
+float ABaseVehicle::GetPickupSlotAlpha(int32 pickupSlot) const
+{
+	switch (PickupSlots[pickupSlot].State)
+	{
+	case EPickupSlotState::Active:
+		return ((FMath::FloorToInt(GetRealTimeClock() * 4.0f) & 1) ? 0.2f : 1.0f);
+
+	case EPickupSlotState::Empty:
+		return 0.0f;
+
+	case EPickupSlotState::Idle:
+		return FMath::Min(PickupSlots[pickupSlot].Timer * 3.0f, 1.0f);
+
+	case EPickupSlotState::Used:
+		return 1.0f - FMath::Min(PickupSlots[pickupSlot].Timer * 1.0f, 1.0f);
+	}
+
+	return 0.0f;
+}
+
+/**
+* Get the scale for a pickup slot.
+***********************************************************************************/
+
+float ABaseVehicle::GetPickupSlotScale(int32 pickupSlot) const
+{
+	switch (PickupSlots[pickupSlot].State)
+	{
+	case EPickupSlotState::Idle:
+	{
+		float timer = FMath::Min(PickupSlots[pickupSlot].Timer * 2.5f, 1.0f);
+
+		timer = FMath::Sqrt(timer);
+		timer = FMath::Sqrt(timer);
+
+		return 1.0f + FMath::Sin(timer * PI) * 0.75f;
+	}
+	case EPickupSlotState::Used:
+		return FMath::Cos((FMath::Min(PickupSlots[pickupSlot].Timer * 1.0f, 1.0f)));
+	default:
+		return 1.0f;
+	}
+}
+
+/**
+* Release the pickup in a particular slot.
+***********************************************************************************/
+
+void ABaseVehicle::ReleasePickupSlot(int32 pickupSlot, bool animate)
+{
+	FPlayerPickupSlot& playerPickupSlot = PickupSlots[pickupSlot];
+
+	if (playerPickupSlot.State == EPickupSlotState::Active)
+	{
+	}
+
+	if (playerPickupSlot.State != EPickupSlotState::Used &&
+		playerPickupSlot.State != EPickupSlotState::Empty)
+	{
+		playerPickupSlot.Timer = 0.0f;
+		playerPickupSlot.EfficacyTimer = 0.0f;
+		playerPickupSlot.State = (animate == true) ? EPickupSlotState::Used : EPickupSlotState::Empty;
+
+		if (animate == false)
+		{
+			playerPickupSlot.ChargingState = EPickupSlotChargingState::None;
+			playerPickupSlot.ChargeTimer = 0.0f;
+		}
+
+		playerPickupSlot.HookTimer = 0.0f;
+		playerPickupSlot.Pickup.Reset();
+
+		if (animate == false)
+		{
+			playerPickupSlot.Type = EPickupType::None;
+		}
+	}
+}
+
+/**
+* Switch the target for a pickup slot.
+***********************************************************************************/
+
+void ABaseVehicle::SwitchPickupTarget(int32 pickupSlot)
+{
+}
+
+/**
+* Is a pickup currently charging at all?
+***********************************************************************************/
+
+bool ABaseVehicle::PickupIsCharging(bool ignoreTurbos)
+{
+	for (FPlayerPickupSlot& pickup : PickupSlots)
+	{
+		if (pickup.IsCharging(true) == true)
+		{
+			if (ignoreTurbos == false ||
+				pickup.Type != EPickupType::TurboBoost)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+#pragma endregion VehiclePickups

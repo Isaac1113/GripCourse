@@ -307,6 +307,23 @@ void ABaseVehicle::UpdateAI(float deltaSeconds)
 						AI.IsDrivingCasually() == true &&
 						AI.RouteFollower.IsValid() == true)
 					{
+
+#pragma region VehiclePickups
+
+						float speedScale = 1.5f;
+						float speedTimeAhead = 2.0f;
+
+						if (APickupBase::GetSpeedAhead(speedTimeAhead, speedScale, this) > speed + 50.0f)
+						{
+							// Hit the boost if we need it right now.
+
+							AI.BoostForMinimumSpeed = false;
+
+							BoostOn(false);
+						}
+
+#pragma endregion VehiclePickups
+
 					}
 				}
 
@@ -362,6 +379,19 @@ void ABaseVehicle::UpdateAI(float deltaSeconds)
 		}
 
 #pragma endregion AIAttraction
+
+#pragma region VehicleHUD
+
+		if (FVector::DotProduct(direction, AI.RouteFollower.ThisSpline->GetDirectionAtDistanceAlongSpline(AI.RouteFollower.ThisDistance, ESplineCoordinateSpace::World)) < 0.0f)
+		{
+			HUD.WrongWayTimer += deltaSeconds;
+		}
+		else
+		{
+			HUD.WrongWayTimer = 0.0f;
+		}
+
+#pragma endregion VehicleHUD
 
 		hasHeading = true;
 	}
@@ -761,6 +791,19 @@ void ABaseVehicle::AIDetermineSplineAimPoint(float ahead, float movementSize)
 {
 	bool freeSlot = false;
 
+#pragma region VehiclePickups
+
+	for (FPlayerPickupSlot& pickup : PickupSlots)
+	{
+		if (pickup.State == EPickupSlotState::Empty)
+		{
+			freeSlot = true;
+			break;
+		}
+	}
+
+#pragma endregion VehiclePickups
+
 	AI.RouteFollower.DetermineNext(ahead, movementSize, (StayOnThisSpline() == true || HasAIDriver() == false) ? GetAI().RouteFollower.ThisSpline.Get() : nullptr, false, freeSlot, IsUsingTurbo(), -RaceState.RaceCatchupRatio);
 }
 
@@ -1045,6 +1088,32 @@ void ABaseVehicle::AIUpdateTargetsOfOpportunity(const FVector& location, const F
 
 				for (auto& element : PlayGameMode->Attractables)
 				{
+
+#pragma region VehiclePickups
+
+					APickup* pickup = Cast<APickup>(element.Key);
+
+					if (pickup != nullptr)
+					{
+						// If this is a pickup, then don't bother if we have no space for it.
+
+						if (ArePickupSlotsFilled() == true)
+						{
+							continue;
+						}
+
+						// If we have some linked-spline rule then ensure we meet it.
+
+						if (pickup->AttractionPursuitSplineOnly == true &&
+							AI.RouteFollower.ThisSpline != pickup->NearestPursuitSpline &&
+							AI.RouteFollower.NextSpline != pickup->NearestPursuitSpline)
+						{
+							continue;
+						}
+					}
+
+#pragma endregion VehiclePickups
+
 					IAttractableInterface* attractable = element.Value;
 
 					if (attractable != nullptr)

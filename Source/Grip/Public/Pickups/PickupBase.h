@@ -55,6 +55,46 @@ public:
 	bool LaunchVehicleIsValid() const
 	{ return (LaunchVehicle != nullptr); }
 
+#pragma region VehiclePickups
+
+	// Activate the pickup.
+	virtual void ActivatePickup(ABaseVehicle* launchVehicle, int32 pickupSlot, EPickupActivation activation, bool charged);
+
+	// Destroy the pickup.
+	virtual void DestroyPickup();
+
+	// What type is this pickup?
+	EPickupType GetPickupType() const
+	{ return PickupType; }
+
+	// Is this pickup charged?
+	bool IsCharged() const
+	{ return Charged; }
+
+	// Get the curvature ahead of the vehicle over the period of time given.
+	static FRotator GetCurvatureAhead(float overTime, float speedScale, ABaseVehicle* launchVehicle);
+
+	// Is a vehicle within the bounds of the curvature ahead of the vehicle over the period of time given.
+	static bool WithinCurvatureAhead(float overTime, float speedScale, ABaseVehicle* launchVehicle, float yawDegreesPerSecond, float pitchDegreesPerSecond = 0.0f, float rollDegreesPerSecond = 0.0f);
+
+	// Get the minimum optimum speed ahead of the vehicle over the period of time given.
+	static float GetSpeedAhead(float overTime, float speedScale, ABaseVehicle* launchVehicle);
+
+protected:
+
+	// Do some post initialization just before the game is ready to play.
+	virtual void PostInitializeComponents() override;
+
+	// Which slot in the launch vehicle this pickup is assigned to.
+	int32 PickupSlot = 0;
+
+private:
+
+	// Is this pickup charged?
+	bool Charged = false;
+
+#pragma endregion VehiclePickups
+
 protected:
 
 	// Naked pointer to game state for performance reasons.

@@ -289,6 +289,22 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 
 #pragma endregion VehiclePhysicsTweaks
 
+#pragma region PickupTurbo
+
+	ApplyTurboRaiseForce(deltaSeconds, transform);
+
+	if (Propulsion.RaiseFrontScale != 0.0f)
+	{
+		// Reduce the grip scale when using a charged turbo to encourage players to
+		// only use this pickup when on a straight and enhance the sense of turbo power.
+
+		gripScale = FMath::Min(gripScale, 1.0f - (Propulsion.RaiseFrontScale * 0.5f));
+	}
+
+	gripScale *= Propulsion.BoostGripScale;
+
+#pragma endregion PickupTurbo
+
 #pragma region VehicleAntiGravity
 
 	// Update the air power of the antigravity vehicles.
@@ -2463,6 +2479,32 @@ float ABaseVehicle::GetJetEnginePower(int32 numWheelsInContact, const FVector& x
 		enginePower *= 1.0f - FMath::Pow(FMath::Min((GetSpeedKPH() / (GetGearSpeedRange() * 1.8f)), 1.0f), 4.0f);
 	}
 
+#pragma region PickupTurbo
+
+	// Boost the power with a turbo-type device like the Firestorm turbo.
+
+	enginePower += (Propulsion.MaxJetEnginePower * Propulsion.Boost);
+
+#pragma endregion PickupTurbo
+
+#pragma region VehiclePickups
+
+	if (PickupIsCharging(true) == true)
+	{
+		// Slow the vehicle down if it's charging a pickup slot.
+
+		if (GetSpeedKPH() < 250.0f)
+		{
+			enginePower *= 1.0f - ((GetSpeedKPH() / 250.0f) * 0.5f);
+		}
+		else
+		{
+			enginePower *= 0.5f;
+		}
+	}
+
+#pragma endregion VehiclePickups
+
 #pragma region VehicleDrifting
 
 	// Now add in the extra power that we give for drifting. If we don't do this, then
@@ -2534,6 +2576,18 @@ FVector ABaseVehicle::GetDownForce()
 	for (FVehicleWheel& wheel : Wheels.Wheels)
 	{
 		float distance = wheel.GetActiveSensor().GetSurfaceDistance();
+
+#pragma region PickupTurbo
+
+		// Try to keep the vehicle on the ceiling when doing a charged turbo.
+
+		if (wheel.HasRearPlacement() == false &&
+			Propulsion.RaiseFrontScale > KINDA_SMALL_NUMBER)
+		{
+			distance = wheel.Radius;
+		}
+
+#pragma endregion PickupTurbo
 
 		averageSamples += 1.0f;
 		averageCompression += wheel.GetActiveSensor().GetNormalizedCompression();
@@ -2923,6 +2977,74 @@ void ABaseVehicle::UpdateDriftingPhysics(float deltaSeconds, float steeringPosit
 }
 
 #pragma endregion VehicleDrifting
+
+#pragma region PickupTurbo
+
+/**
+* Apply the turbo raise force when using a charged turbo pickup.
+***********************************************************************************/
+
+void ABaseVehicle::ApplyTurboRaiseForce(float deltaSeconds, const FTransform& transform)
+{
+	if (Wheels.RearAxleDown == true &&
+		Propulsion.Boost > KINDA_SMALL_NUMBER &&
+		Propulsion.RaiseFrontScale > KINDA_SMALL_NUMBER)
+	{
+		FVector velocity = GetVelocityOrFacingDirection();
+		FVector direction = transform.InverseTransformVector(velocity);
+
+		if (direction.X > 0.0f)
+		{
+			float angle = FMath::RadiansToDegrees(FMath::Atan2(direction.Z, direction.X));
+
+			if (IsFlipped() == false)
+			{
+				angle *= -1.0f;
+			}
+
+			FVector force = GetLaunchDirection();
+			float maxDegrees = 12.0f;
+
+			if (angle < maxDegrees)
+			{
+				float angleScale = FMath::Pow(1.0f - (FMath::Max(angle, 0.0f) / maxDegrees), 0.5f);
+
+				if (angle > maxDegrees * 0.8f &&
+					Propulsion.RaiseFrontAchieved == 0.0f)
+				{
+					Propulsion.RaiseFrontAchieved = VehicleClock;
+				}
+
+				float raiseScale = Propulsion.RaiseFrontScale;
+
+				if (Propulsion.RaiseFrontAchieved != 0.0f)
+				{
+					float timeSince = VehicleClock - Propulsion.RaiseFrontAchieved;
+
+					raiseScale = Propulsion.RaiseFrontScale * (1.0f - FMath::Min(timeSince / 0.75f, 1.0f));
+				}
+
+				force *= 0.45f;
+				force *= angleScale;
+				force *= Propulsion.Boost * 0.125f;
+				force *= raiseScale;
+				force *= VehicleMesh->GetPhysicsInertiaTensor().Y;
+				force *= FMath::Min(GetSpeedKPH() / 300.0f, 1.0f);
+
+				// Apply an upwards force to the front axle position to raise the vehicle up,
+				// currently only during the charged turbo boost.
+
+				VehicleMesh->AddForceAtLocationSubstep(force, Wheels.FrontAxlePosition);
+			}
+			else if (Propulsion.RaiseFrontAchieved == 0.0f)
+			{
+				Propulsion.RaiseFrontAchieved = VehicleClock;
+			}
+		}
+	}
+}
+
+#pragma endregion PickupTurbo
 
 #pragma region VehicleAntiGravity
 

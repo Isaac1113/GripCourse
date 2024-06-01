@@ -21,6 +21,20 @@
 
 void UHUDTargetingWidgetComponent::DrawPrimaryHoming(const UHUDTargetingWidgetComponent* component, const FPaintContext& paintContext, USlateBrushAsset* slateBrush, float globalOpacity)
 {
+
+#pragma region VehicleHUD
+
+	ABaseVehicle* targetVehicle = component->GetTargetVehicle();
+
+	if (targetVehicle != nullptr)
+	{
+		FMinimalViewInfo desiredView;
+
+		targetVehicle->Camera->GetCameraViewNoPostProcessing(0.0f, desiredView);
+	}
+
+#pragma endregion VehicleHUD
+
 }
 
 /**
@@ -29,6 +43,84 @@ void UHUDTargetingWidgetComponent::DrawPrimaryHoming(const UHUDTargetingWidgetCo
 
 void UHUDTargetingWidgetComponent::DrawPrimaryTracking(const UHUDTargetingWidgetComponent* component, const FPaintContext& paintContext, USlateBrushAsset* slateBrush, USlateBrushAsset* slateBrushSecondary, float globalOpacity)
 {
+
+#pragma region VehicleHUD
+
+	ABaseVehicle* targetVehicle = component->GetTargetVehicle();
+
+	if (GRIP_OBJECT_VALID(targetVehicle) == true)
+	{
+		FMinimalViewInfo desiredView;
+
+		targetVehicle->Camera->GetCameraViewNoPostProcessing(0.0f, desiredView);
+
+		for (int32 pass = 0; pass < 2; pass++)
+		{
+			for (int32 pickupSlot = 0; pickupSlot < 2; pickupSlot++)
+			{
+				if (targetVehicle->HasTarget(pickupSlot) == true)
+				{
+					FVector2D screenPosition;
+					float alpha = targetVehicle->TargetFadeIn(pickupSlot);
+					FVector2D size = component->GetTargetSizeFromOpacity(alpha, 64.0f);
+
+					if (component->PlayGameMode->ProjectWorldLocationToWidgetPosition(targetVehicle, targetVehicle->GetHUD().TargetLocation[pickupSlot], screenPosition, &desiredView) == true)
+					{
+						float lineScale = 1.0f;
+						FLinearColor color = FLinearColor(0.0f, 1.0f, 0.0f, alpha * globalOpacity);
+
+						if (alpha < 0.99f)
+						{
+							color = FLinearColor(1.0f, 1.0f, 1.0f, alpha * globalOpacity);
+						}
+
+						if (targetVehicle->IsPrimaryTarget(pickupSlot) == false)
+						{
+							color.A = 0.5f;
+							size *= 0.666f;
+							lineScale *= 0.666f;
+						}
+
+						if (pass == 0)
+						{
+							UWidgetBlueprintLibrary::DrawBox(const_cast<FPaintContext&>(paintContext), screenPosition - (size * 0.5f), size, slateBrush, color);
+						}
+						else
+						{
+							bool inBoth = (targetVehicle->HasTarget(pickupSlot ^ 1) && targetVehicle->GetHUD().GetCurrentMissileTargetActor(pickupSlot) == targetVehicle->GetHUD().GetCurrentMissileTargetActor(pickupSlot ^ 1));
+
+							float lineWidth = 12.0f;
+							float linelength = 48.0f;
+							FVector2D lineSize = FVector2D(lineWidth, linelength);
+							FVector2D lineSize2 = lineSize * 0.5f;
+
+							if (inBoth == true)
+							{
+								if (pickupSlot == 0)
+								{
+									UWidgetBlueprintLibrary::DrawBox(const_cast<FPaintContext&>(paintContext), screenPosition - lineSize2, lineSize, slateBrushSecondary, color);
+									UWidgetBlueprintLibrary::DrawBox(const_cast<FPaintContext&>(paintContext), screenPosition - FVector2D(+12.0f * lineScale, 0.0f) - lineSize2 * lineScale, lineSize * lineScale, slateBrushSecondary, color);
+									UWidgetBlueprintLibrary::DrawBox(const_cast<FPaintContext&>(paintContext), screenPosition - FVector2D(-12.0f * lineScale, 0.0f) - lineSize2 * lineScale, lineSize * lineScale, slateBrushSecondary, color);
+								}
+							}
+							else if (pickupSlot == 0)
+							{
+								UWidgetBlueprintLibrary::DrawBox(const_cast<FPaintContext&>(paintContext), screenPosition - lineSize2 * lineScale, lineSize * lineScale, slateBrushSecondary, color);
+							}
+							else
+							{
+								UWidgetBlueprintLibrary::DrawBox(const_cast<FPaintContext&>(paintContext), screenPosition - FVector2D(+6.0f * lineScale, 0.0f) - lineSize2 * lineScale, lineSize * lineScale, slateBrushSecondary, color);
+								UWidgetBlueprintLibrary::DrawBox(const_cast<FPaintContext&>(paintContext), screenPosition - FVector2D(-6.0f * lineScale, 0.0f) - lineSize2 * lineScale, lineSize * lineScale, slateBrushSecondary, color);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+#pragma endregion VehicleHUD
+
 }
 
 /**
@@ -37,6 +129,46 @@ void UHUDTargetingWidgetComponent::DrawPrimaryTracking(const UHUDTargetingWidget
 
 void UHUDTargetingWidgetComponent::DrawSecondaryTracking(const UHUDTargetingWidgetComponent* component, const FPaintContext& paintContext, USlateBrushAsset* slateBrush, USlateBrushAsset* slateBrushSecondary, float globalOpacity)
 {
+
+#pragma region VehicleHUD
+
+	ABaseVehicle* targetVehicle = component->GetTargetVehicle();
+
+	if (GRIP_OBJECT_VALID(targetVehicle) == true)
+	{
+		FMinimalViewInfo desiredView;
+
+		targetVehicle->Camera->GetCameraViewNoPostProcessing(0.0f, desiredView);
+
+		for (int32 pickupSlot = 0; pickupSlot < 2; pickupSlot++)
+		{
+			AActor* targetted = targetVehicle->GetHUD().GetCurrentMissileTargetActor(pickupSlot);
+
+			for (FHUDTarget& missile : targetVehicle->GetHUD().PickupTargets[pickupSlot])
+			{
+				if (missile.Target.Get() != targetted)
+				{
+					FVector2D screenPosition;
+					float alpha = missile.TargetTimer;
+					FVector2D size = component->GetTargetSizeFromOpacity(alpha, 32.0f);
+					ITargetableInterface* target = Cast<ITargetableInterface>(missile.Target.Get());
+
+					if (target != nullptr &&
+						component->PlayGameMode->ProjectWorldLocationToWidgetPosition(targetVehicle, target->GetTargetBullsEye(), screenPosition, &desiredView) == true)
+					{
+						screenPosition -= size * 0.5f;
+
+						FLinearColor color = FLinearColor(1.0f, 1.0f, 1.0f, alpha * globalOpacity);
+
+						UWidgetBlueprintLibrary::DrawBox(const_cast<FPaintContext&>(paintContext), screenPosition, size, (missile.Primary == true) ? slateBrush : slateBrushSecondary, color);
+					}
+				}
+			}
+		}
+	}
+
+#pragma endregion VehicleHUD
+
 }
 
 /**
@@ -45,4 +177,36 @@ void UHUDTargetingWidgetComponent::DrawSecondaryTracking(const UHUDTargetingWidg
 
 void UHUDTargetingWidgetComponent::DrawThreats(const UHUDTargetingWidgetComponent* component, const FPaintContext& paintContext, USlateBrushAsset* slateBrush, float globalOpacity)
 {
+
+#pragma region VehicleHUD
+
+	ABaseVehicle* targetVehicle = component->GetTargetVehicle();
+
+	if (GRIP_OBJECT_VALID(targetVehicle) == true)
+	{
+		FMinimalViewInfo desiredView;
+
+		targetVehicle->Camera->GetCameraViewNoPostProcessing(0.0f, desiredView);
+
+		for (FHUDTarget& missile : targetVehicle->GetHUD().ThreatTargets)
+		{
+			FVector2D screenPosition;
+			float alpha = missile.TargetTimer;
+			FVector2D size = component->GetTargetSizeFromOpacity(alpha, 30.0f);
+			AActor* target = missile.Target.Get();
+
+			if (target != nullptr &&
+				component->PlayGameMode->ProjectWorldLocationToWidgetPosition(targetVehicle, target->GetActorLocation(), screenPosition, &desiredView) == true)
+			{
+				screenPosition -= size * 0.5f;
+
+				FLinearColor color = FLinearColor(1.0f, 0.0f, 0.0f, alpha * globalOpacity);
+
+				UWidgetBlueprintLibrary::DrawBox(const_cast<FPaintContext&>(paintContext), screenPosition, size, slateBrush, color);
+			}
+		}
+	}
+
+#pragma endregion VehicleHUD
+
 }

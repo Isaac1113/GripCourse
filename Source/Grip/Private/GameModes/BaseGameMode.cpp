@@ -790,3 +790,82 @@ void ABaseGameMode::WakeComponent(USceneComponent* component)
 		component->SetHiddenInGame(false);
 	}
 }
+
+#pragma region VehicleCamera
+
+/**
+* Get the film noise amount for a particular location in the environment from the
+* post-process volumes.
+***********************************************************************************/
+
+float ABaseGameMode::GetEnvironmentFilmNoiseAmount(const FVector& location)
+{
+	float amount = 0.0f;
+
+	for (APostProcessVolume* postProcess : PostProcessVolumes)
+	{
+		if (GRIP_OBJECT_VALID(postProcess) == true &&
+			postProcess->bEnabled)
+		{
+			if (postProcess->Settings.bOverride_GrainIntensity)
+			{
+				if (postProcess->bUnbound == true)
+				{
+					amount = FMath::Max(amount, postProcess->Settings.GrainIntensity * 0.5f);
+				}
+				else
+				{
+					float distance = 0.0f;
+					float radius = FMath::Max(1.0f, postProcess->BlendRadius);
+
+					if (postProcess->EncompassesPoint(location, radius, &distance) == true)
+					{
+						amount = FMath::Max(amount, postProcess->Settings.GrainIntensity * 0.5f * (1.0f - (distance / radius)));
+					}
+				}
+			}
+		}
+	}
+
+	return amount;
+}
+
+/**
+* Get the scene tint for a particular location in the environment from the
+* post-process volumes.
+***********************************************************************************/
+
+FLinearColor ABaseGameMode::GetEnvironmentSceneTint(const FVector& location)
+{
+	FLinearColor globalTint = FLinearColor(1.0f, 1.0f, 1.0f);
+	FLinearColor otherTint = FLinearColor(1.0f, 1.0f, 1.0f);
+	float otherRatio = 0.0f;
+
+	for (APostProcessVolume* postProcess : PostProcessVolumes)
+	{
+		if (GRIP_OBJECT_VALID(postProcess) == true &&
+			postProcess->bEnabled &&
+			postProcess->Settings.bOverride_SceneColorTint)
+		{
+			if (postProcess->bUnbound == true)
+			{
+				globalTint = postProcess->Settings.SceneColorTint;
+			}
+			else
+			{
+				float distance = 0.0f;
+				float radius = FMath::Max(1.0f, postProcess->BlendRadius);
+
+				if (postProcess->EncompassesPoint(location, radius, &distance) == true)
+				{
+					otherRatio = (1.0f - (distance / radius));
+					otherTint = postProcess->Settings.SceneColorTint;
+				}
+			}
+		}
+	}
+
+	return FMath::Lerp(globalTint, otherTint, otherRatio);
+}
+
+#pragma endregion VehicleCamera

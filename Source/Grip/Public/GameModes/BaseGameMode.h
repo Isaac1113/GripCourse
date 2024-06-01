@@ -115,6 +115,18 @@ public:
 	static ECollisionChannel ECC_LineOfSightTestIncVehicles;
 	static ECollisionChannel ECC_TerrainFollowing;
 
+#pragma region VehicleCamera
+
+public:
+
+	// Get the film noise amount for a particular location in the environment from the post-process volumes.
+	float GetEnvironmentFilmNoiseAmount(const FVector& location);
+
+	// Get the scene tint for a particular location in the environment from the post-process volumes.
+	FLinearColor GetEnvironmentSceneTint(const FVector& location);
+
+#pragma endregion VehicleCamera
+
 protected:
 
 	// Do some post initialization just before the game is ready to play.

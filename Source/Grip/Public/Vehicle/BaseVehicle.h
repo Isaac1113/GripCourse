@@ -1304,9 +1304,12 @@ private:
 	// Get the down force based on the velocity of the vehicle and its down force coefficient, in meters per second.
 	FVector GetDownForce();
 
+#pragma region VehiclePickups
+
 	// Is a pickup currently charging at all?
-	bool PickupIsCharging(bool ignoreTurbos)
-	{ return false; }
+	bool PickupIsCharging(bool ignoreTurbos);
+
+#pragma endregion VehiclePickups
 
 	// Get the speed range for a single gear.
 	// This is for piston engine simulation.
@@ -1889,15 +1892,123 @@ private:
 
 #pragma endregion PickupPads
 
-#pragma region PickupsAvailable
+#pragma region VehiclePickups
 
 public:
 
-	// Get a pickup slot's details.
-	const FPlayerPickupSlot& GetPickupSlot(int32 index) const
-	{ static FPlayerPickupSlot slot; return slot; }
+	// Can AI vehicles attack this vehicle?
+	bool CanBeAttacked() const
+	{ return ((AI.BotVehicle == true) ? true : VehicleClock > AttackAfter); }
 
-#pragma endregion PickupsAvailable
+	// Get a scale for damage inflicted by weapons, taking into account double damage etc.
+	int32 GetDamageScale() const
+	{ return (RaceState.DoubleDamage > 0.0f) ? 2 : 1; }
+
+	// Does this vehicle have a particular pickup type?
+	bool HasPickup(EPickupType type, bool includeActive = true) const
+	{ for (const FPlayerPickupSlot& pickup : PickupSlots) if (pickup.Type == type && (pickup.State == EPickupSlotState::Idle || (includeActive == true && pickup.State == EPickupSlotState::Active))) return true; return false; }
+
+	// Get a pickup slot's details.
+	const FPlayerPickupSlot& GetPickupSlot(int32 pickupSlot) const
+	{ return PickupSlots[pickupSlot]; }
+
+	// Release the pickup in a particular slot.
+	void ReleasePickupSlot(int32 pickupSlot, bool animate = true);
+
+	// Get the alpha for a pickup slot.
+	float GetPickupSlotAlpha(int32 pickupSlot) const;
+
+private:
+
+	// Update the pickup slots.
+	void UpdatePickupSlots(float deltaSeconds);
+
+	// Start using a pickup.
+	void BeginUsePickup(int32 pickupSlot, bool bot, bool force = false);
+
+	// Use a pickup.
+	void UsePickup(int32 pickupSlot, EPickupActivation activation, bool bot);
+
+	// Use the pickup in slot 1.
+	void UsePickup1()
+	{ BeginUsePickup(0, false); }
+
+	// Use the pickup in slot 2.
+	void UsePickup2()
+	{ BeginUsePickup(1, false); }
+
+	// Use the pickup in slot 1.
+	void ReleasePickup1()
+	{ UsePickup(0, EPickupActivation::Released, false); }
+
+	// Use the pickup in slot 2.
+	void ReleasePickup2()
+	{ UsePickup(1, EPickupActivation::Released, false); }
+
+	// Force a particular pickup to a vehicle.
+	void ForcePickup(EPickupType type, int32 pickupSlot);
+
+	// Get the scale for a pickup slot.
+	float GetPickupSlotScale(int32 pickupSlot) const;
+
+	// Determine the selected target.
+	void DetermineTargets(float deltaSeconds, const FVector& location, const FVector& direction);
+
+	// Switch the missile target.
+	void SwitchMissileTarget()
+	{ if (AI.BotDriver == false) SwitchPickupTarget(-1); }
+
+	// Switch the target for a pickup slot.
+	void SwitchPickupTarget(int32 pickupSlot = -1);
+
+	// Determine which pickup to give to a vehicle.
+	EPickupType DeterminePickup(APickup* pickup);
+
+	// The number of pickup slots.
+	static const int32 NumPickups = 2;
+
+	// Information for each of the pickup slots.
+	FPlayerPickupSlot PickupSlots[NumPickups];
+
+	// Count for the pickup collection order.
+	int32 PickupCount = 0;
+
+	// Repeat count for the last pickup given.
+	int32 LastPickupRepeatCount = 0;
+
+	// The last pickup type given to this vehicle.
+	EPickupType LastPickupGiven = EPickupType::None;
+
+	// The pseudo-randomized queued pickups for each placement.
+	TArray<TArray<EPickupType>> QueuedPickups;
+
+#pragma endregion VehiclePickups
+
+#pragma region PickupTurbo
+
+public:
+
+	// Set the properties of the turbo boost.
+	void SetTurboBoost(float turboBoost, float gripScale, float raiseFrontScale, float normalizedThrust)
+	{
+		Propulsion.Boost = turboBoost;
+		Propulsion.BoostGripScale = 1.0f - (turboBoost * (1.0f - gripScale));
+		Propulsion.RaiseFrontScale = raiseFrontScale;
+		Propulsion.TurboThrottle = normalizedThrust;
+	}
+
+private:
+
+	// Update the light streaks for a vehicle.
+	void UpdateLightStreaks(float deltaSeconds);
+
+	// Apply the turbo raise force when using a charged turbo pickup.
+	void ApplyTurboRaiseForce(float deltaSeconds, const FTransform& transform);
+
+	// The last alpha value used to render the vehicle's light streaks.
+	float LastTurboAlpha = -1.0f;
+
+#pragma endregion PickupTurbo
 
 #pragma region PickupShield
 
@@ -1968,6 +2079,35 @@ private:
 
 #pragma endregion VehicleSpringArm
 
+#pragma region VehicleCamera
+
+public:
+
+	// Get the amount for the warning vignette on the camera.
+	float GetWarningAmount() const
+	{ return HUD.WarningAmount * HUD.WarningAlpha; }
+
+	// Get the color for the warning vignette on the camera.
+	FLinearColor GetWarningColour() const
+	{
+		switch (HUD.WarningSource)
+		{
+		case EHUDWarningSource::StandardPickup:
+			return FLinearColor(1.0f, 1.0f, 0.25f, 0.0f);
+		case EHUDWarningSource::HealthPickup:
+			return FLinearColor(0.0f, 0.5f, 1.0f, 0.0f);
+		case EHUDWarningSource::DoubleDamage:
+		case EHUDWarningSource::DoubleDamagePickup:
+			return FLinearColor(0.4f, 0.0f, 0.8f, 0.0f);
+		case EHUDWarningSource::Elimination:
+			return FLinearColor(1.0f, 0.33f, 0.0f, 0.0f);
+		default:
+			return FLinearColor(0.0f, 0.0f, 0.0f, 0.0f);
+		}
+	}
+
+#pragma endregion VehicleCamera
+
 #pragma region VehicleHUD
 
 public:
@@ -1993,19 +2133,27 @@ public:
 
 	// Get the alpha for pickup slot 1.
 	float GetPickupSlot1Alpha() const
-	{ return 0.0f; }
+	{
+		return GetPickupSlotAlpha(0);
+	}
 
 	// Get the alpha for pickup slot 2.
 	float GetPickupSlot2Alpha() const
-	{ return 0.0f; }
+	{
+		return GetPickupSlotAlpha(1);
+	}
 
 	// Get the scale for pickup slot 1.
 	float GetPickupSlot1Scale() const
-	{ return 0.0f; }
+	{
+		return GetPickupSlotScale(0);
+	}
 
 	// Get the scale for pickup slot 2.
 	float GetPickupSlot2Scale() const
-	{ return 0.0f; }
+	{
+		return GetPickupSlotScale(1);
+	}
 
 	// Get the alpha value of the wrong way indicator.
 	float GetWrongWayAlpha();
@@ -2069,6 +2217,19 @@ private:
 
 	// The HUD properties for the vehicle.
 	FVehicleHUD HUD;
+
+public:
+
+	// Hookup a HUD for the player.
+	void HookupPlayerHUD();
+
+	// Unhook the HUD for the player.
+	void UnhookPlayerHUD();
+
+private:
+
+	// Update the animation on the HUD.
+	void UpdateHUDAnimation(float deltaSeconds);
 
 #pragma endregion VehicleHUD
 
@@ -2235,7 +2396,7 @@ public:
 
 	// Are all of the pickup slots filled?
 	bool ArePickupSlotsFilled() const
-	{ return false; }
+	{ return ((PickupSlots[0].State != EPickupSlotState::Empty) && (PickupSlots[1].State != EPickupSlotState::Empty)); }
 
 	// Is the vehicle currently destroyed.
 	bool IsVehicleDestroyed(bool ignoreSuspended = true) const
@@ -2294,11 +2455,11 @@ public:
 
 	// Is the player current using a turbo boost?
 	bool IsUsingTurbo(bool isCharged = false) const
-	{ return false; }
+	{ for (const FPlayerPickupSlot& pickup : PickupSlots) if (pickup.Type == EPickupType::TurboBoost && pickup.State == EPickupSlotState::Active) return (isCharged == false || pickup.IsCharged()); return false; }
 
 	// Is the player currently using double damage?
 	bool IsUsingDoubleDamage() const
-	{ return false; }
+	{ for (const FPlayerPickupSlot& pickup : PickupSlots) if (pickup.State == EPickupSlotState::Active && RaceState.DoubleDamage > 0.0f) return true; return false; }
 
 	// Shake the camera.
 	bool ShakeCamera(float strength);

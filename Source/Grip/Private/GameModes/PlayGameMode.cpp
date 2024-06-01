@@ -40,6 +40,16 @@ TSubclassOf<USingleHUDWidget> APlayGameMode::SingleScreenWidgetClass = nullptr;
 
 APlayGameMode::APlayGameMode()
 {
+
+#pragma region VehicleHUD
+
+	{
+		static ConstructorHelpers::FObjectFinder<UClass> asset(TEXT("'/Game/UserInterface/HUD/WBP_SingleHUDWidget.WBP_SingleHUDWidget_C'"));
+		SingleScreenWidgetClass = (UClass*)asset.Object;
+	}
+
+#pragma endregion VehicleHUD
+
 	// We need all of the players to be ticked before the game state so that we can
 	// calculate race position effectively.
 
@@ -50,6 +60,17 @@ APlayGameMode::APlayGameMode()
 	// Ensure that random is random.
 
 	FMath::RandInit((int32)FDateTime::Now().ToUnixTimestamp() + (uint64)(this));
+
+#pragma region VehiclePickups
+
+	while (NumPickupTypes.Num() < (int32)EPickupType::Num)
+	{
+		NumPickupTypes.Emplace(0);
+		LastUsedPickupTypes.Emplace(0.0f);
+	}
+
+#pragma endregion VehiclePickups
+
 }
 
 /**
@@ -448,6 +469,23 @@ void APlayGameMode::BeginPlay()
 	}
 
 #pragma endregion AIVehicleControl
+
+#pragma region VehicleHUD
+
+	if (GlobalGameState->IsGameModeRace() == true)
+	{
+		for (ABaseVehicle* vehicle : Vehicles)
+		{
+			URaceCameraComponent* camera = vehicle->Camera;
+
+			camera->SmoothLocation = false;
+			camera->SmoothRotation = false;
+
+			camera->SwitchLocationToCustomControl();
+		}
+	}
+
+#pragma endregion VehicleHUD
 
 	GameSequence = EGameSequence::Initialise;
 
@@ -1218,12 +1256,307 @@ void APlayGameMode::GetAllWidgetsForParent(TArray<UWidget*>& widgets, UPanelWidg
 	}
 }
 
+#pragma region VehicleHUD
+
+/**
+* Small structure used for name tag sorting.
+***********************************************************************************/
+
+struct FNameTagSorter
+{
+	int32 Index;
+
+	FVector2D ScreenPosition;
+
+	float Depth;
+
+	float Opacity;
+};
+
+/**
+* Find a name tag structure for a given index.
+***********************************************************************************/
+
+static FNameTagSorter* FindNameTagForIndex(TArray<FNameTagSorter>& nameTags, int32 index)
+{
+	for (FNameTagSorter& nameTag : nameTags)
+	{
+		if (nameTag.Index == index)
+		{
+			return &nameTag;
+		}
+	}
+
+	return nullptr;
+}
+
+/**
+* Get the alpha value for a player tag.
+***********************************************************************************/
+
+static float GetPlayerTagAlphaValue(float distance, bool arenaMode)
+{
+	float opacity = 1.0f;
+	float visMinDist = 1.0f * 100.0f;
+	float visMaxDist = visMinDist + (10.0f * 100.0f);
+
+	if (distance < visMinDist)
+	{
+		opacity = 0.0f;
+	}
+	else if (distance < visMaxDist)
+	{
+		opacity = (distance - visMinDist) / (visMaxDist - visMinDist);
+	}
+
+	if (arenaMode == false)
+	{
+		float visFarDist = visMaxDist + (400.0f * 100.0f);
+
+		if (distance > visFarDist)
+		{
+			opacity = 0.0f;
+		}
+		else if (distance > visMaxDist)
+		{
+			opacity = 1.0f - ((distance - visMaxDist) / (visFarDist - visMaxDist));
+			opacity = FMath::Pow(opacity, 0.5f);
+		}
+	}
+
+	return opacity;
+}
+
+#pragma endregion VehicleHUD
+
 /**
 * Update the player tags on the HUD.
 ***********************************************************************************/
 
 void APlayGameMode::UpdatePlayerTags(APawn* owningPawn, UPanelWidget* parent)
 {
+
+#pragma region VehicleHUD
+
+	if (parent != nullptr &&
+		owningPawn != nullptr)
+	{
+		TArray<UWidget*> widgets;
+		GetAllWidgetsForParent(widgets, parent);
+
+		ABaseVehicle* vehicle = Cast<ABaseVehicle>(owningPawn);
+		FVector ownerLocation = owningPawn->GetActorLocation();
+
+		bool showTags = GlobalGameState->GeneralOptions.ShowPlayerNameTags != EShowPlayerNameTags::None;
+		bool showAllTags = GlobalGameState->GeneralOptions.ShowPlayerNameTags == EShowPlayerNameTags::All;
+		bool showNoTags = PastGameSequenceStart() == false;
+
+		FMinimalViewInfo desiredView;
+
+		vehicle->Camera->GetCameraViewNoPostProcessing(0.0f, desiredView);
+
+		static const FName kArenaName("ArenaPipper");
+
+		// Find all of the visual components for the name tags and calculate their screen position
+		// and initial opacity.
+
+		int32 arenaIndex = 0;
+		int32 playerIndex = 0;
+		bool arenaMode = GlobalGameState->IsGameModeArena();
+
+		TArray<FNameTagSorter> nameTags;
+
+		for (UWidget* widget : widgets)
+		{
+			ANSICHAR ansiName[NAME_SIZE];
+			FName name = widget->GetFName();
+			name.GetDisplayNameEntry()->GetAnsiName(ansiName);
+
+			if (strncmp(ansiName, "ArenaPipper", 11) == 0)
+			{
+				// Handle the pipper arrow for a player.
+
+				int32 vehicleIndex = arenaIndex++;
+
+				if (showNoTags == false &&
+					Vehicles.Num() > vehicleIndex &&
+					Vehicles[vehicleIndex]->IsVehicleDestroyed() == false)
+				{
+					if (vehicle == nullptr ||
+						vehicle->GetRaceState().PlayerCompletionState == EPlayerCompletionState::Incomplete)
+					{
+						if (showAllTags == true)
+						{
+							FVector2D position;
+							FVector location = Vehicles[vehicleIndex]->GetTargetLocation();
+
+							location.Z += 200.0f;
+
+							if (ProjectWorldLocationToWidgetPosition(owningPawn, location, position, &desiredView) == true)
+							{
+								FNameTagSorter nameTag;
+
+								float distance = (location - ownerLocation).Size();
+
+								nameTag.Index = vehicleIndex;
+								nameTag.Opacity = (showTags == true && vehicle != Vehicles[vehicleIndex]) ? GetPlayerTagAlphaValue(distance, arenaMode) : 0.0f;
+								nameTag.ScreenPosition = position;
+								nameTag.Depth = distance;
+
+								nameTags.Emplace(nameTag);
+
+								UCanvasPanelSlot* canvasSlot = UWidgetLayoutLibrary::SlotAsCanvasSlot(widget);
+
+								canvasSlot->SetPosition(position);
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Sort the name tags by depth.
+
+		nameTags.Sort([this] (const FNameTagSorter& object1, const FNameTagSorter& object2)
+			{
+				return object1.Depth < object2.Depth;
+			});
+
+		// Now declutter overlapping tags by fading out those that are overlapping and furthest away.
+
+		for (int32 i = 0; i < nameTags.Num(); i++)
+		{
+			for (int32 j = i + 1; j < nameTags.Num(); j++)
+			{
+				FNameTagSorter& n0 = nameTags[i];
+
+				if (n0.Opacity > KINDA_SMALL_NUMBER)
+				{
+					FNameTagSorter& n1 = nameTags[j];
+					FVector2D difference = n1.ScreenPosition - n0.ScreenPosition;
+					float width = 100.0f;
+					float height = 20.0f;
+
+					float ox = 1.0f - FMath::Min(FMath::Max(FMath::Abs(difference.X) - width, 0.0f) / width, 1.0f);
+					float oy = 1.0f - FMath::Min(FMath::Max(FMath::Abs(difference.Y) - height, 0.0f) / height, 1.0f);
+					float o = ox * oy;
+
+					n1.Opacity *= 1.0f - (o * n0.Opacity);
+				}
+			}
+		}
+
+		// Update the visual components associated with the name tags.
+
+		arenaIndex = 0;
+		playerIndex = 0;
+
+		for (UWidget* widget : widgets)
+		{
+			ANSICHAR ansiName[NAME_SIZE];
+			FName name = widget->GetFName();
+			name.GetDisplayNameEntry()->GetAnsiName(ansiName);
+
+			if (strncmp(ansiName, "ArenaPipper", 11) == 0)
+			{
+				// Handle the pipper arrow for a player.
+
+				ESlateVisibility visible = ESlateVisibility::Collapsed;
+				int32 vehicleIndex = arenaIndex++;
+				FNameTagSorter* nameTag = FindNameTagForIndex(nameTags, vehicleIndex);
+
+				if (nameTag != nullptr &&
+					nameTag->Opacity > 0.0f)
+				{
+					ABaseVehicle* tagVehicle = Vehicles[vehicleIndex];
+					const FString& playerName = tagVehicle->GetPlayerName(true, true);
+
+					FLinearColor color;
+
+					float opacity = nameTag->Opacity;
+
+					if (vehicle->IsUsingDoubleDamage() == true)
+					{
+						color = FLinearColor(0.4f, 0.0f, 0.8f, opacity);
+					}
+					else
+					{
+						color = FLinearColor(1.0f, 1.0f, 1.0f, opacity);
+					}
+
+					if (color.A < 0.01f)
+					{
+						color.A = 0.0f;
+					}
+
+					Cast<UImage>(widget)->SetColorAndOpacity(color);
+
+					if (color.A != 0.0f)
+					{
+						UWidgetLayoutLibrary::SlotAsCanvasSlot(widget)->SetPosition(nameTag->ScreenPosition);
+
+						visible = ESlateVisibility::HitTestInvisible;
+					}
+				}
+
+				widget->SetVisibility(visible);
+			}
+			else if (strncmp(ansiName, "PlayerName", 10) == 0)
+			{
+				// Handle the name rendering for a player.
+
+				ESlateVisibility visible = ESlateVisibility::Collapsed;
+				int32 vehicleIndex = playerIndex++;
+				FNameTagSorter* nameTag = FindNameTagForIndex(nameTags, vehicleIndex);
+
+				if (nameTag != nullptr &&
+					nameTag->Opacity > 0.0f)
+				{
+					ABaseVehicle* tagVehicle = Vehicles[vehicleIndex];
+					UTextBlock* textBlock = Cast<UTextBlock>(widget);
+
+					FLinearColor color;
+
+					float opacity = nameTag->Opacity;
+
+					if (vehicle->IsUsingDoubleDamage() == true)
+					{
+						color = FLinearColor(0.4f, 0.0f, 0.8f, opacity);
+					}
+					else
+					{
+						color = FLinearColor(1.0f, 1.0f, 1.0f, opacity);
+					}
+
+					if (color.A < 0.01f)
+					{
+						color.A = 0.0f;
+					}
+
+					textBlock->SetColorAndOpacity(FSlateColor(color));
+
+					if (color.A != 0.0f)
+					{
+						FFormatNamedArguments arguments;
+
+						arguments.Emplace(TEXT("PlayerName"), FText::FromString(tagVehicle->GetPlayerName(true, true)));
+						arguments.Emplace(TEXT("Distance"), FText::AsNumber((int32)FMathEx::CentimetersToMeters(nameTag->Depth)));
+
+						textBlock->SetText(FText::Format(NSLOCTEXT("GripHUD", "PlayerDistance", "{PlayerName}\r\n{Distance} m"), arguments));
+
+						UWidgetLayoutLibrary::SlotAsCanvasSlot(widget)->SetPosition(nameTag->ScreenPosition);
+
+						visible = ESlateVisibility::HitTestInvisible;
+					}
+				}
+
+				widget->SetVisibility(visible);
+			}
+		}
+	}
+
+#pragma endregion VehicleHUD
+
 }
 
 /**
@@ -1350,6 +1683,34 @@ void APlayGameMode::AddGameEvent(FGameEvent& gameEvent)
 
 	gameEvent.Time = GetRealTimeClock();
 
+#pragma region VehicleHUD
+
+	if (gameEvent.LaunchVehicleIndex >= 0)
+	{
+		ABaseVehicle* vehicle = GetVehicleForVehicleIndex(gameEvent.LaunchVehicleIndex);
+		ABaseVehicle* target = GetVehicleForVehicleIndex(gameEvent.TargetVehicleIndex);
+		FVector location = (target != nullptr) ? target->GetActorLocation() : FVector::ZeroVector;
+
+		if (gameEvent.EventType == EGameEventType::Impacted)
+		{
+			switch (gameEvent.PickupUsed)
+			{
+			case EPickupType::HomingMissile:
+			{
+				int32 numPoints = 100;
+
+				if (vehicle->AddPoints(numPoints, (target != nullptr), target, location) == true)
+				{
+					vehicle->ShowStatusMessage(FStatusMessage(GetXPMessage(gameEvent.PickupUsed, numPoints)), true, false);
+				}
+			}
+			break;
+			}
+		}
+	}
+
+#pragma endregion VehicleHUD
+
 	// Record the event.
 
 	GameEvents.Emplace(gameEvent);
@@ -1383,6 +1744,83 @@ float APlayGameMode::MasterRacingSplineDistanceToLapDistance(float distance)
 
 bool APlayGameMode::ProjectWorldLocationToWidgetPosition(APawn* pawn, FVector worldLocation, FVector2D& screenPosition, FMinimalViewInfo* cachedView)
 {
+
+#pragma region VehicleHUD
+
+	APlayerController* controller = Cast<APlayerController>(pawn->GetController());
+
+	if (controller != nullptr)
+	{
+		FVector screenLocation;
+
+		if (controller->ProjectWorldLocationToScreenWithDistance(worldLocation, screenLocation) == true)
+		{
+			screenLocation.X = FMath::RoundToInt(screenLocation.X);
+			screenLocation.Y = FMath::RoundToInt(screenLocation.Y);
+
+			ULocalPlayer* localPlayer = controller->GetLocalPlayer();
+
+			if (localPlayer != nullptr &&
+				localPlayer->ViewportClient != nullptr)
+			{
+				FSceneViewProjectionData projectionData;
+
+				if (localPlayer->GetProjectionData(localPlayer->ViewportClient->Viewport, eSSP_FULL, projectionData))
+				{
+					screenLocation.X -= projectionData.GetConstrainedViewRect().Min.X;
+					screenLocation.Y -= projectionData.GetConstrainedViewRect().Min.Y;
+
+					// If invalid position.
+
+					if (screenLocation.X < (-projectionData.GetConstrainedViewRect().Min.X) || (screenLocation.X > projectionData.GetConstrainedViewRect().Max.X))
+					{
+						return false;
+					}
+				}
+			}
+
+			// Get the application / DPI scale.
+
+			float scale = UWidgetLayoutLibrary::GetViewportScale(controller);
+
+			// Apply inverse DPI scale so that the widget ends up in the expected position.
+
+			screenLocation *= FMath::Pow(scale, -1.0f);
+
+			// screenLocation is now in general screen space offset from the top-right corner for the
+			// viewport. It takes nothing about the widget's positioning into account, or its size.
+			// It assumes the widget covers the entire viewport.
+
+			ABaseVehicle* vehicle = Cast<ABaseVehicle>(pawn);
+
+			if (vehicle != nullptr)
+			{
+				FVehicleHUD& hud = vehicle->GetHUD();
+
+				if (GlobalGameState->IsTrackMirrored() == true)
+				{
+					screenLocation.X -= hud.WidgetPositionSize.X * 0.5f;
+					screenLocation.X *= -1.0f;
+					screenLocation.X += hud.WidgetPositionSize.X * 0.5f;
+				}
+
+				FVector2D distorted = FVector2D(screenLocation.X / hud.WidgetPositionSize.X, screenLocation.Y / hud.WidgetPositionSize.Y);
+
+				screenLocation.X = distorted.X * hud.WidgetPositionSize.X * hud.WidgetPositionScale.X;
+				screenLocation.Y = distorted.Y * hud.WidgetPositionSize.Y * hud.WidgetPositionScale.Y;
+			}
+
+			screenPosition.X = screenLocation.X;
+			screenPosition.Y = screenLocation.Y;
+
+			return true;
+		}
+
+		return false;
+	}
+
+#pragma endregion VehicleHUD
+
 	return false;
 }
 
@@ -1540,10 +1978,61 @@ void APlayGameMode::UpdateRaceStartLine()
 {
 	if (GameSequence == EGameSequence::Start)
 	{
-		if (Clock < StartLineDropTime)
+
+#pragma region VehicleHUD
+
+		// Allow the player to cut short the camera drop by hitting the throttle.
+
+		for (ABaseVehicle* vehicle : Vehicles)
 		{
-			Clock = StartLineDropTime;
+			float throttle = vehicle->GetVehicleControl().ThrottleInput;
+
+			if (vehicle->HasAIDriver() == false &&
+				Clock < StartLineDropTime - 1.5f &&
+				FMath::Abs(throttle) > 0.25f)
+			{
+				Clock = StartLineDropTime - 1.5f;
+				break;
+			}
 		}
+
+		bool cameraDropping = Clock <= StartLineDropTime;
+
+		if (cameraDropping == true)
+		{
+			if (StartCameraDropped == false)
+			{
+				// Drop the camera down onto the vehicle.
+
+				for (ABaseVehicle* vehicle : Vehicles)
+				{
+					URaceCameraComponent* camera = vehicle->Camera;
+					float ratio = FMathEx::EaseInOut(Clock / StartLineDropTime, 2.5f);
+					FVector to = camera->GetNativeLocation();
+					FVector from = camera->GetNativeLocation() + camera->GetComponentRotation().RotateVector(FVector(0.0f, 0.0f, 250.0f));
+
+					camera->CustomLocation = FMath::Lerp(from, to, ratio);
+				}
+			}
+		}
+		else
+		{
+			if (StartCameraDropped == false)
+			{
+				StartCameraDropped = true;
+
+				for (ABaseVehicle* vehicle : Vehicles)
+				{
+					URaceCameraComponent* camera = vehicle->Camera;
+
+					camera->CustomLocation = camera->GetNativeLocation();
+
+					camera->SwitchLocationToNativeControl();
+				}
+			}
+		}
+
+#pragma endregion VehicleHUD
 
 		bool startingGame = Clock > StartLineCountTo;
 
@@ -1564,6 +2053,27 @@ void APlayGameMode::UpdateRaceStartLine()
 
 FText APlayGameMode::GetCountDownTime() const
 {
+
+#pragma region VehicleHUD
+
+	if (GameSequence == EGameSequence::Start)
+	{
+		if (Clock >= StartLineCountFrom &&
+			Clock < StartLineCountTo)
+		{
+			return FText::AsNumber(StartLineCountTo - FMath::FloorToInt(Clock));
+		}
+	}
+	else if (GameSequence == EGameSequence::Play)
+	{
+		if (GetRealTimeGameClock() < 2.0f)
+		{
+			return NSLOCTEXT("GripScoreboard", "Go", "GO!");
+		}
+	}
+
+#pragma endregion VehicleHUD
+
 	return FText::FromString("");
 }
 
@@ -1573,6 +2083,23 @@ FText APlayGameMode::GetCountDownTime() const
 
 float APlayGameMode::GetCountdownOpacity() const
 {
+
+#pragma region VehicleHUD
+
+	if (GameSequence == EGameSequence::Start)
+	{
+		return 1.0f;
+	}
+	else if (GameSequence == EGameSequence::Play)
+	{
+		if (GetRealTimeGameClock() < 2.0f)
+		{
+			return 1.0f - (GetRealTimeGameClock() / 2.0f);
+		}
+	}
+
+#pragma endregion VehicleHUD
+
 	return 0.0f;
 }
 
@@ -1596,7 +2123,36 @@ float APlayGameMode::GetPreStartTime() const
 
 float APlayGameMode::GetHUDScale() const
 {
-	return 0.0f;
+
+#pragma region VehicleHUD
+
+	UGlobalGameState* gameState = UGlobalGameState::GetGlobalGameState(this);
+
+	if (GameSequence == EGameSequence::Start)
+	{
+		float zoomTime = 0.5f;
+		float startTime = 0;
+
+		if (Clock < startTime)
+		{
+			return 0.0f;
+		}
+		else if ((Clock - startTime) < zoomTime)
+		{
+			return (Clock - startTime) / zoomTime;
+		}
+		else
+		{
+			return 1.0f;
+		}
+	}
+	else
+	{
+		return 1.0f;
+	}
+
+#pragma endregion VehicleHUD
+
 }
 
 #pragma region VehiclePhysicsTweaks
@@ -1858,3 +2414,262 @@ void APlayGameMode::CalculateRanksAndScoring()
 }
 
 #pragma endregion VehicleRaceDistance
+
+#pragma region VehiclePickups
+
+/**
+* Get the relative pickup index between 0 and 2 for a particular vehicle.
+* 0 is winning and 2 is losing.
+***********************************************************************************/
+
+int32 APlayGameMode::GetPlayerRacePickupIndex(ABaseVehicle* vehicle)
+{
+	if (GlobalGameState->IsGameModeRace() == true)
+	{
+		int32 position = FMath::Max(0, vehicle->GetRaceState().RacePosition);
+		int32 opponentsLeft = GetNumOpponentsLeft();
+
+		if (opponentsLeft >= 3)
+		{
+			// We have at least 3 players, so they fit into metric of 3 areas of pickup determination.
+
+			return FMath::FloorToInt(((float)position / (float)opponentsLeft) * 2.999f);
+		}
+		else if (opponentsLeft > 1)
+		{
+			// We've few players, so work on distance now.
+
+			if (position > 0)
+			{
+				float firstPlayerDistance = 0.0f;
+
+				for (ABaseVehicle* firstVehicle : Vehicles)
+				{
+					if (firstVehicle->GetRaceState().RacePosition == 0)
+					{
+						firstPlayerDistance = firstVehicle->GetRaceState().EternalRaceDistance;
+						break;
+					}
+				}
+
+				float distance = firstPlayerDistance - vehicle->GetRaceState().EternalRaceDistance;
+
+				if (distance > 250.0f * 100.0f)
+				{
+					return 2;
+				}
+				else if (distance > 150.0f * 100.0f)
+				{
+					return 1;
+				}
+			}
+		}
+	}
+
+	return 0;
+}
+
+/**
+* Should a vehicle be fighting another vehicle or just try to catchup with the
+* humans?
+*
+* -1 means no, 0 means yes, +1 means hell yeah!
+*
+* This generated from the playgamemode weapon use data.
+***********************************************************************************/
+
+float APlayGameMode::VehicleShouldFightVehicle(ABaseVehicle* aggressor, ABaseVehicle* victim)
+{
+	// Handle the simple cases first.
+
+	if (aggressor == nullptr)
+	{
+		return 0.0f;
+	}
+
+	if (aggressor->HasAIDriver() == false)
+	{
+		// This is a human player, let them do what they want.
+
+		return 0.0f;
+	}
+
+	FWeaponCatchupCharacteristics& weapons = GetDifficultyCharacteristics().WeaponCatchupCharacteristics;
+	FVehicleCatchupCharacteristics& vehicles = GetDifficultyCharacteristics().VehicleCatchupCharacteristics;
+	float halfSpread = vehicles.DistanceSpread * 0.5f;
+	float catchupRatio = 0.0f, min = 0.0f, max = 0.0f;
+
+	if (victim != nullptr)
+	{
+		// We're asked to consider another vehicle to fight with.
+
+		if (victim->HasAIDriver() == true)
+		{
+			// It's an AI player, so we should fight them if they're ahead of the human players.
+
+			// The catchup ratio of this vehicle compared to the mean human distance. -1 = max speedup and 1 = max slowdown.
+
+			catchupRatio = victim->GetRaceState().StockCatchupRatioUnbounded;
+
+			min = -weapons.TrailingDistanceNonHumans /* 100 */ / halfSpread;
+			max = weapons.LeadingDistanceNonHumans /* 250 */ / halfSpread;
+		}
+		else
+		{
+			// It's a human player, so we should fight them if they're not losing. So consider
+			// distance from the median of the pack.
+
+			// The ratio of catchup to be applied to the vehicle. -1 = max speedup and 1 = max slowdown.
+
+			catchupRatio = victim->GetRaceState().StockCatchupRatioUnbounded;
+
+			min = -weapons.TrailingDistanceHumans /* 100 */ / halfSpread;
+			max = weapons.LeadingDistanceHumans /* 100 */ / halfSpread;
+		}
+	}
+	else
+	{
+		// Just fighting in general, we should fight if we're ahead of the human players.
+
+		// The catchup ratio of this vehicle compared to the mean human distance. -1 = max speedup and 1 = max slowdown.
+
+		catchupRatio = aggressor->GetRaceState().StockCatchupRatioUnbounded;
+
+		min = -weapons.TrailingDistance / halfSpread;
+		max = weapons.LeadingDistance / halfSpread;
+	}
+
+	float result = 0.0f;
+
+	if (catchupRatio < 0.0f)
+	{
+		// Target vehicle is trailing. If they're really trailing then much less likely to fight.
+
+		result = FMath::Max(-1.0f, -(catchupRatio / FMath::Max(-1.0f, min)));
+	}
+	else
+	{
+		// Target vehicle is leading. If they're really leading then much more likely to fight.
+
+		result = FMath::Min(+1.0f, (catchupRatio / FMath::Min(+1.0f, max)));
+	}
+
+	// Add a curve to the result, in order to increase the aggression of the aggressor
+	// above linear.
+
+	result = (FMath::Pow((result * 0.5f) + 0.5f, 0.5f) - 0.5f) * 2.0f;
+
+	return result;
+}
+
+/**
+* Should a pickup be used?
+*
+* aggressionRatio from VehicleShouldFightVehicle, -1 to 1 meaning using weapons,
+* 1 use as soon as possible, -1 meaning don't use any time soon.
+***********************************************************************************/
+
+bool APlayGameMode::ShouldUsePickup(bool isBot, const FPlayerPickupSlot* pickup, float aggressionRatio) const
+{
+	if (isBot == true)
+	{
+		if (aggressionRatio < 0.0f)
+		{
+			// The vehicle we want to attack is trailing, so don't attack it until we've run out of time.
+			// This should never be the case for human players.
+
+			return (pickup->Timer >= pickup->UseBefore);
+		}
+		else
+		{
+			// The vehicle is leading so use the pickup more quickly the more aggressive we are.
+			// Human players will be between 0 and 1, with 0 being normal and 1 being a special target.
+
+			return (pickup->Timer >= FMath::Lerp(pickup->UseBefore, pickup->UseAfter, aggressionRatio));
+		}
+	}
+	else
+	{
+		return aggressionRatio > -1.0f;
+	}
+}
+
+/**
+* Should an offensive pickup be used?
+*
+* weight is 0 for perfect target and 1 for worst-case target, < 0 means don't
+* target ever.
+* aggressionRatio from VehicleShouldFightVehicle, -1 to 1 meaning using weapons,
+* 1 use as soon as possible, -1 meaning don't use any time soon.
+***********************************************************************************/
+
+float APlayGameMode::ScaleOffensivePickupWeight(bool isBot, float weight, const FPlayerPickupSlot* pickup, float aggressionRatio) const
+{
+	if (aggressionRatio == -1.0f)
+	{
+		// This aggressionRatio means do not fight.
+
+		weight = -1.0f;
+	}
+
+	if (weight >= 0.0f)
+	{
+		if (isBot == false)
+		{
+			// Triple the chances of use if this is a target which a human player really wants to hit.
+			// aggressionRatio is always 0 to 1 for human players.
+
+			return FMath::Lerp(weight, weight * 0.333f, aggressionRatio);
+		}
+		else if (pickup != nullptr)
+		{
+			// Void the weight if the bot isn't ready for this target due to pickup use rules considering aggression.
+
+			return (ShouldUsePickup(isBot, pickup, aggressionRatio) == true) ? weight : 1.0f;
+		}
+	}
+
+	return weight;
+}
+
+/**
+* Should a defensive pickup be used?
+*
+* weight is 0 for perfect defensive posture and 1 for worst-case posture.
+* aggressionRatio from VehicleShouldFightVehicle, 0 to 1 meaning using pickups,
+* 1 use as soon as possible.
+***********************************************************************************/
+
+float APlayGameMode::ScaleDefensivePickupWeight(bool isBot, float weight, const FPlayerPickupSlot* pickup, float aggressionRatio) const
+{
+	if (weight >= 0.0f && pickup != nullptr)
+	{
+		return 1.0f - ((1.0f - weight) * ((ShouldUsePickup(isBot, pickup, aggressionRatio) == true) ? 1.0f : 0.0f));
+	}
+
+	return weight;
+}
+
+/**
+* Get the number of pickups currently present for a given pickup type.
+***********************************************************************************/
+
+int32 APlayGameMode::NumPickupsPresent(EPickupType pickupType)
+{
+	int32 numPickups = NumPickupTypes[(int32)pickupType];
+
+	for (ABaseVehicle* vehicle : Vehicles)
+	{
+		if (vehicle->IsVehicleDestroyed(false) == false)
+		{
+			if (vehicle->HasPickup(pickupType, false) == true)
+			{
+				numPickups++;
+			}
+		}
+	}
+
+	return numPickups;
+}
+
+#pragma endregion VehiclePickups
