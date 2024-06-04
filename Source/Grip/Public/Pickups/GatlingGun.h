@@ -42,6 +42,20 @@ public:
 
 	// Use human player audio?
 	virtual bool UseHumanPlayerAudio() const = 0;
+
+#pragma region PickupGun
+
+	// Get the orientation of the gun.
+	virtual FQuat GetGunOrientation() const = 0;
+
+	// Get the direction for firing a round.
+	virtual FVector GetGunRoundDirection(FVector direction) const = 0;
+
+	// Get the round ejection properties.
+	virtual FVector EjectGunRound(int32 roundLocation, bool charged) = 0;
+
+#pragma endregion PickupGun
+
 };
 
 /**
@@ -139,4 +153,91 @@ private:
 	// Audio component for the barrel spin sound.
 	UPROPERTY(Transient)
 		UAudioComponent* BarrelSpinAudio = nullptr;
+
+#pragma region PickupGun
+
+public:
+
+	// Activate the pickup.
+	virtual void ActivatePickup(ABaseVehicle* launchVehicle, int32 pickupSlot, EPickupActivation activation, bool charged) override;
+
+	// Attach to a launch platform, like a defense turret.
+	void AttachLaunchPlatform(AActor* launchPlatform);
+
+	// Begin manual firing of the gun, normally from a defense turret.
+	void BeginFiring(float hitRatio);
+
+	// End manual firing of the gun, normally from a defense turret.
+	void EndFiring();
+
+	// Sweep along projectile direction to see if it hits something along the way.
+	bool GetCollision(UWorld* world, const FVector& start, const FVector& end, float& time, AActor* ignoreTarget);
+
+	// Is the gun currently active?
+	bool IsActive() const
+	{ return Timer < Duration + WindUpTime + WindDownTime; }
+
+	// Select a target for the gun.
+	static AActor* SelectTarget(AActor* launchPlatform, FPlayerPickupSlot* launchPickup, float autoAiming, float& weight, bool speculative);
+
+	// The target actor that the gun is aiming for right now.
+	TWeakObjectPtr<AActor> Target;
+
+protected:
+
+	// Do some shutdown when the actor is being destroyed.
+	virtual void EndPlay(const EEndPlayReason::Type endPlayReason) override;
+
+	// Do the regular update tick.
+	virtual void Tick(float deltaSeconds) override;
+
+private:
+
+	// The launch platform for the gun, not necessarily a vehicle, could be a defense turret also.
+	TWeakObjectPtr<AActor> LaunchPlatform;
+
+	// The gun host interface from the launch platform, cached for speed.
+	IGunHostInterface* GunHost = nullptr;
+
+	// Timer used for the lifetime of the pickup.
+	float Timer = 0.0f;
+
+	// Timer used between firing rounds.
+	float RoundTimer = 0.0f;
+
+	// How often a gun should hit its target, 1 being all the time.
+	float HitRatio = 1.0f;
+
+	// The gun port to use for the next round.
+	int32 RoundLocation = 0;
+
+	// The number of rounds fired.
+	int32 NumRoundsFired = 0;
+
+	// The number of rounds that hit a vehicle.
+	int32 NumRoundsHitVehicle = 0;
+
+	// Hit result for the last round fired.
+	FHitResult HitResult;
+
+	// The world location of the last round impact point.
+	FVector LastImpact;
+
+	// The number of points gained using the weapon.
+	int32 NumPoints = 0;
+
+	// The side to spin the victim around.
+	float SpinSide = 0.0f;
+
+	// Halt the firing of rounds.
+	bool HaltRounds = false;
+
+	// Collision query for target visibility.
+	FCollisionQueryParams QueryParams;
+
+	// The vehicles hit by rounds from the gun.
+	TArray<ABaseVehicle*> HitVehicles;
+
+#pragma endregion PickupGun
+
 };

@@ -72,6 +72,58 @@ const VehicleBlocked VehicleBlockedRear = 2;
 const VehicleBlocked VehicleBlockedLeft = 4;
 const VehicleBlocked VehicleBlockedRight = 8;
 
+#pragma region PickupGun
+
+/**
+* Class for management of a vehicle following another vehicle in the form of
+* a general attractable.
+***********************************************************************************/
+
+class FVehicleFollower : public IAttractableInterface
+{
+public:
+
+	// Is the attraction currently active?
+	virtual bool IsAttractionActive() const override
+	{ return GRIP_POINTER_VALID(FollowingVehicle); }
+
+	// Get the attraction location.
+	virtual FVector GetAttractionLocation() const override;
+
+	// Get the attraction direction, or FVector::ZeroVector if no direction.
+	virtual FVector GetAttractionDirection() const override
+	{ return FVector::ZeroVector; }
+
+	// Get the attraction distance range from the location.
+	virtual float GetAttractionDistanceRange() const override
+	{ return 250.0f * 100.0f; }
+
+	// Get the attraction minimum distance at which capture can start.
+	virtual float GetAttractionMinCaptureDistanceRange() const override
+	{ return 5.0f * 100.0f; }
+
+	// Get the attraction angle range from the direction.
+	virtual float GetAttractionAngleRange() const override
+	{ return MaxAngle; }
+
+	// Which other vehicle is the vehicle currently following.
+	TWeakObjectPtr<ABaseVehicle> FollowingVehicle;
+
+	// If we're following a vehicle because of weapon use, which pickup slot is it?
+	int32 LinkedToPickupSlot = -1;
+
+	// How long has the vehicle we're following been hidden from view?
+	float VehicleHiddenTimer = 0.0f;
+
+	// The maximum angle we will follow the vehicle to.
+	float MaxAngle = 0.0f;
+
+	// The distance at which we should follow the vehicle.
+	float TrackingDistance = 0.0f;
+};
+
+#pragma endregion PickupGun
+
 /**
 * Class for managing the general state of AI for a vehicle.
 ***********************************************************************************/
@@ -383,6 +435,16 @@ public:
 
 	// What actor is the vehicle currently attracted to, a cached IAttractableInterface for speed.
 	IAttractableInterface* AttractedTo = nullptr;
+
+#pragma region PickupGun
+
+	// Follow a vehicle while using a particular pickup against them.
+	void FollowVehicleWithPickup(ABaseVehicle* vehicle, int32 pickupSlot, float maxAngle, float trackingDistance);
+
+	// The follower used to trail another vehicle.
+	FVehicleFollower VehicleFollower;
+
+#pragma endregion PickupGun
 
 #pragma endregion AIAttraction
 

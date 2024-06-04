@@ -694,6 +694,63 @@ void ABaseVehicle::UsePickup(int32 pickupSlot, EPickupActivation activation, boo
 		}
 		break;
 
+#pragma region PickupGun
+
+		case EPickupType::GatlingGun:
+		{
+			if (release == true)
+			{
+				if (IsUsingGatlingGun() == false)
+				{
+					AGatlingGun* gatlingGun = nullptr;
+
+					if (playerPickupSlot.IsCharged() == true)
+					{
+						if (Level2GatlingGunBlueprint != nullptr)
+						{
+							gatlingGun = GetWorld()->SpawnActor<AGatlingGun>(Level2GatlingGunBlueprint, VehicleMesh->GetComponentLocation(), VehicleMesh->GetComponentRotation(), spawnParams);
+						}
+					}
+					else
+					{
+						if (Level1GatlingGunBlueprint != nullptr)
+						{
+							gatlingGun = GetWorld()->SpawnActor<AGatlingGun>(Level1GatlingGunBlueprint, VehicleMesh->GetComponentLocation(), VehicleMesh->GetComponentRotation(), spawnParams);
+						}
+					}
+
+					if (GRIP_OBJECT_VALID(gatlingGun) == true)
+					{
+						playerPickupSlot.Activation = activation;
+
+						gatlingGun->ActivatePickup(this, pickupSlot, activation, playerPickupSlot.IsCharged());
+
+						playerPickupSlot.Pickup = gatlingGun;
+						playerPickupSlot.Timer = 0.0f;
+						playerPickupSlot.State = EPickupSlotState::Active;
+
+						FGameEvent gameEvent;
+						ABaseVehicle* targettedVehicle = Cast<ABaseVehicle>(gatlingGun->Target.Get());
+
+						gameEvent.LaunchVehicleIndex = VehicleIndex;
+						gameEvent.TargetVehicleIndex = (targettedVehicle != nullptr) ? targettedVehicle->VehicleIndex : -1;
+						gameEvent.PickupUsed = playerPickupSlot.Type;
+						gameEvent.PickupUsedWasCharged = playerPickupSlot.IsCharged();
+						gameEvent.EventType = EGameEventType::Used;
+
+						PlayGameMode->AddGameEvent(gameEvent);
+					}
+				}
+				else
+				{
+					PlayDeniedSound();
+				}
+			}
+		}
+		break;
+
+#pragma endregion PickupGun
+
 		default:
 			break;
 		}
@@ -778,6 +835,12 @@ EPickupType ABaseVehicle::DeterminePickup(APickup* pickup)
 				raceProbabilities[section][(int32)EPickupType::TurboBoost] = raceRow->TurboBoost;
 
 #pragma endregion PickupTurbo
+
+#pragma region PickupGun
+
+				raceProbabilities[section][(int32)EPickupType::GatlingGun] = raceRow->GatlingGun;
+
+#pragma endregion PickupGun
 
 			}
 		}
@@ -1028,6 +1091,22 @@ void ABaseVehicle::DetermineTargets(float deltaSeconds, const FVector& location,
 			if (PickupSlots[pickupSlot].State == EPickupSlotState::Idle)
 			{
 				float weight = 0.0f;
+
+#pragma region PickupGun
+
+				if (PickupSlots[pickupSlot].Type == EPickupType::GatlingGun)
+				{
+					AGatlingGun* gun = Level1GatlingGunBlueprint->GetDefaultObject<AGatlingGun>();
+					AActor* newTarget = AGatlingGun::SelectTarget(this, nullptr, gun->AutoAiming, weight, false);
+
+					if (newTarget != nullptr)
+					{
+						targets.Emplace(newTarget);
+					}
+				}
+
+#pragma endregion PickupGun
+
 			}
 
 			if (missileTarget == nullptr &&
@@ -1284,3 +1363,183 @@ bool ABaseVehicle::PickupIsCharging(bool ignoreTurbos)
 }
 
 #pragma endregion VehiclePickups
+
+#pragma region PickupGun
+
+/**
+* Apply a bullet round force.
+***********************************************************************************/
+
+bool ABaseVehicle::BulletRound(float strength, int32 hitPoints, int32 aggressorVehicleIndex, const FVector& position, const FVector& fromPosition, bool charged, float spinSide)
+{
+	VehicleMesh->IdleUnlock();
+
+	float massScale = Physics.CurrentMass / 5000.0f;
+
+	BulletHitTimer = APickup::GetEfficacyDelayBeforeUse(EPickupType::Shield, this);
+
+	strength *= 2.25f;
+
+	// Lift the vehicle up in the air a bit and push it sideways a little also.
+
+	FVector direction(0.0f, 1000000.0f * strength, 0.0f);
+
+	if (FMath::RandBool() == true)
+	{
+		direction *= -1.0f;
+	}
+
+	if (IsGrounded() == true)
+	{
+		direction.Z = 5000000.0f * FMath::Min(0.25f, strength) * ((IsFlipped() == true) ? -1.0f : 1.0f);
+	}
+
+	const FTransform& transform = VehicleMesh->GetComponentTransform();
+
+	direction = transform.TransformVector(direction);
+
+	VehicleMesh->AddImpulse(direction * massScale * 2.0f);
+
+	// If we're going greater than 100 kph then slow the vehicle down a bit.
+
+	if (GetSpeedKPH() > 100.0f)
+	{
+		// More stopping power for charged hits.
+
+		if (charged == true)
+		{
+			VehicleMesh->AddImpulse(GetVelocityOrFacingDirection() * massScale * -1500000.0f);
+		}
+		else
+		{
+			VehicleMesh->AddImpulse(GetVelocityOrFacingDirection() * massScale * -1150000.0f);
+		}
+	}
+
+	// Now spin it around a bit.
+
+	if (charged == true &&
+		(FMath::Rand() & 3) != 0)
+	{
+		// For charged bullets, let 3 out of 4 rounds all hit on one side to promote a strong spin.
+
+		// Just add some random left/right angular velocity (Z is yaw), and a little pitch (Y is pitch).
+
+		direction = FVector(0.0f, FMath::FRandRange(-0.15f, 0.15f), FMath::FRandRange(0.1f, 0.15f) * spinSide);
+	}
+	else
+	{
+		// Just add some random left/right angular velocity (Z is yaw), and a little pitch (Y is pitch).
+
+		direction = FVector(0.0f, FMath::FRandRange(-0.25f, 0.25f), FMath::FRandRange(-0.25f, 0.25f));
+
+		if (IsAirborne() == false)
+		{
+			direction *= FMathEx::GetRatio(FMath::Abs(FVector::DotProduct(GetVelocityOrFacingDirection(), GetFacingDirection())), 0.5f, 1.0f);
+		}
+	}
+
+	// Bring it into world space before applying it to the angular velocity.
+
+	direction = transform.TransformVector(direction);
+	direction.Normalize();
+	direction *= 75.0f * strength;
+
+	if (IsGrounded() == false)
+	{
+		direction *= 0.5f;
+	}
+
+	// Note this is not the best way of inducing the angular velocity. For example, if the vehicle was
+	// spinning wildly before being hit, this change in velocity to a set value could well stop the
+	// vehicle spinning so badly and help it out. It's much better to add a torque to the vehicle
+	// instead if you can figure out the math for how strong the torque should be to bring about
+	// the desired physical behavior.
+
+	VehicleMesh->SetPhysicsAngularVelocityInDegrees(direction, true);
+
+	return true;
+}
+
+/**
+* Get the orientation of the gun.
+***********************************************************************************/
+
+FQuat ABaseVehicle::GetGunOrientation() const
+{
+	FVector forward = GetFacingDirection();
+	FVector up = GetLaunchDirection();
+	FQuat quaternion = FQuat::Identity;
+
+	FMathEx::GetQuaternionFromForwardUp(forward, up, quaternion);
+
+	return quaternion;
+}
+
+/**
+* Get the direction for firing a round.
+***********************************************************************************/
+
+FVector ABaseVehicle::GetGunRoundDirection(FVector direction) const
+{
+	if (IsGrounded() == true)
+	{
+		// Aim the machine gun along the ground rather than where the car is pointing
+		// as this may well be tilting up and down while it's driving.
+
+		FVector up = GetSurfaceNormal();
+		FVector newDirection = direction - (up * FVector::DotProduct(direction, up));
+
+		newDirection.Normalize();
+
+		if (FVector::DotProduct(direction, newDirection) > 0.9f)
+		{
+			direction = newDirection;
+		}
+	}
+
+	return direction;
+}
+
+/**
+* Get the round ejection properties.
+***********************************************************************************/
+
+FVector ABaseVehicle::EjectGunRound(int32 roundLocation, bool charged)
+{
+	// Spawn the muzzle flash particle system.
+
+	FName muzzleLocation = ((roundLocation == 0) ? "MachineGun_L" : "MachineGun_R");
+
+	UParticleSystemComponent* muzzleFlash = SpawnParticleSystem(VehicleGun->MuzzleFlashEffect, muzzleLocation, FVector::ZeroVector, FRotator::ZeroRotator, EAttachLocation::KeepRelativeOffset, (charged == true) ? 2.0f : 1.0f);
+
+	muzzleFlash->SetOwnerNoSee(IsCockpitView());
+
+	// Spawn the shell ejection particle system.
+
+	FName shellLocation = ((roundLocation == 0) ? "ShellEject_TL" : "ShellEject_TR");
+	FRotator rotation = FRotator(FMath::FRandRange(-10.0, 10.0f), 0.0f, FMath::FRandRange(-15.0, 15.0f)) + GetActorRotation();
+	FVector velocity = rotation.RotateVector(FVector(0.0, 0.0f, 6.5f * 100.0f));
+
+	if (IsFlipped() == true)
+	{
+		shellLocation = (roundLocation == 0) ? "ShellEject_BL" : "ShellEject_BR";
+		velocity *= -1.0f;
+	}
+
+	velocity += GetVelocity() * 0.9f;
+
+	UParticleSystemComponent* shellEjection = SpawnParticleSystem(VehicleGun->ShellEjectEffect, shellLocation, FVector::ZeroVector, FRotator(0.0f, -90.0f, 0.0f), EAttachLocation::KeepRelativeOffset, 1.0f);
+
+	shellEjection->SetVectorParameter(FName("ShellVelocity"), velocity);
+
+	// Spawn the round firing sound.
+
+	UGameplayStatics::SpawnSoundAttached((IsHumanPlayer() == true) ? VehicleGun->RoundSound : VehicleGun->RoundSoundNonPlayer, VehicleMesh);
+
+	// Return the world location of the muzzle flash.
+
+	return VehicleMesh->GetBoneLocation(muzzleLocation);
+}
+
+#pragma endregion PickupGun

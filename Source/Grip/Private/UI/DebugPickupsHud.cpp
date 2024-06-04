@@ -59,6 +59,19 @@ void ADebugPickupsHUD::DrawSlot(int32 slotIndex, FPlayerPickupSlot& slot, ABaseV
 			FVector fromDirection = vehicle->GetTransform().GetUnitAxis(EAxis::X);
 			FVector targetPosition = targetVehicle->GetTargetBullsEye();
 
+#pragma region PickupGun
+
+			if (slot.Type == EPickupType::GatlingGun)
+			{
+				float spread = (vehicle->Level1GatlingGunBlueprint->GetDefaultObject<AGatlingGun>()->AutoAiming * 0.05f);
+
+				thisWeight = FMathEx::TargetWeight(fromPosition, fromDirection, targetPosition, 5.0f * 100.0f, 250.0f * 100.0f, 1.0f - spread, true);
+
+				AddFloat(TEXT("TargetWeight"), 1.0f - thisWeight);
+			}
+
+#pragma endregion PickupGun
+
 			AddFloat(TEXT("ScaleOffensive"), gameMode->ScaleOffensivePickupWeight(vehicle->HasAIDriver(), thisWeight, &slot, aggressionRatio));
 		}
 	}

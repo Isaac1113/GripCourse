@@ -1843,6 +1843,13 @@ private:
 	void AICancelAttraction()
 	{ if (AI.AttractedTo != nullptr) AI.AttractedTo->Attract(nullptr); AI.AttractedTo = nullptr; AI.AttractedToActor.Reset(); }
 
+#pragma region PickupGun
+
+	// Should this vehicle continue to follow the given vehicle?
+	bool AIShouldContinueToFollow(const FVector& location, const FVector& direction, float deltaSeconds);
+
+#pragma endregion PickupGun
+
 #pragma endregion AIAttraction
 
 #pragma region SpeedPads
@@ -2009,6 +2016,29 @@ private:
 	float LastTurboAlpha = -1.0f;
 
 #pragma endregion PickupTurbo
+
+#pragma region PickupGun
+
+public:
+
+	// Get the orientation of the gun.
+	virtual FQuat GetGunOrientation() const override;
+
+	// Get the direction for firing a round.
+	virtual FVector GetGunRoundDirection(FVector direction) const override;
+
+	// Get the round ejection properties.
+	virtual FVector EjectGunRound(int32 roundLocation, bool charged) override;
+
+	// Apply a bullet round force.
+	bool BulletRound(float strength, int32 hitPoints, int32 aggressorVehicleIndex, const FVector& position, const FVector& fromPosition, bool charged, float spinSide);
+
+private:
+
+	// Timer used to raise your shield after a bullet strikes your vehicle.
+	float BulletHitTimer = 0.0f;
+
+#pragma endregion PickupGun
 
 #pragma region PickupShield
 
@@ -2456,6 +2486,14 @@ public:
 	// Is the player current using a turbo boost?
 	bool IsUsingTurbo(bool isCharged = false) const
 	{ for (const FPlayerPickupSlot& pickup : PickupSlots) if (pickup.Type == EPickupType::TurboBoost && pickup.State == EPickupSlotState::Active) return (isCharged == false || pickup.IsCharged()); return false; }
+
+#pragma region PickupGun
+
+	// Is the player current using a Gatling gun?
+	bool IsUsingGatlingGun(bool isCharged = false) const
+	{ for (const FPlayerPickupSlot& pickup : PickupSlots) if (pickup.Type == EPickupType::GatlingGun && pickup.State == EPickupSlotState::Active) return (isCharged == false || pickup.IsCharged()); return false; }
+
+#pragma endregion PickupGun
 
 	// Is the player currently using double damage?
 	bool IsUsingDoubleDamage() const

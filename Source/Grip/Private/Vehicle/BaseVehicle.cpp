@@ -80,6 +80,20 @@ ABaseVehicle::ABaseVehicle()
 		Elimination.AlertSound = asset.Object;
 	}
 
+#pragma region PickupGun
+
+	{
+		static ConstructorHelpers::FObjectFinder<UClass> asset(TEXT("'/Game/Pickups/Weapons/MachineGun/BP_Level1Gun.BP_Level1Gun_C'"));
+		Level1GatlingGunBlueprint = (UClass*)asset.Object;
+	}
+
+	{
+		static ConstructorHelpers::FObjectFinder<UClass> asset(TEXT("'/Game/Pickups/Weapons/MachineGun/BP_Level2Gun.BP_Level2Gun_C'"));
+		Level2GatlingGunBlueprint = (UClass*)asset.Object;
+	}
+
+#pragma endregion PickupGun
+
 #pragma region PickupTurbo
 
 	{

@@ -229,6 +229,70 @@ void ABaseVehicle::UpdateAI(float deltaSeconds)
 
 #pragma endregion AIVehicleControl
 
+#pragma region PickupGun
+
+		// Handle vehicle following to try to keep behind them by a tracking distance.
+
+		if (GRIP_POINTER_VALID(AI.VehicleFollower.FollowingVehicle) == true)
+		{
+			FVector from = location;
+			FVector to = AI.VehicleFollower.FollowingVehicle->GetActorLocation();
+			FVector toFollowingVehicle = to - from;
+			FVector toFollowingVehicleDirection = toFollowingVehicle; toFollowingVehicleDirection.Normalize();
+			float distance = toFollowingVehicle.Size();
+
+			distance -= FMath::Min(AI.VehicleFollower.TrackingDistance, distance);
+
+			FVector ourVelocity = GetVelocity();
+			FVector theirVelocity = AI.VehicleFollower.FollowingVehicle->GetVelocity();
+			FVector ourVelocityDirection = GetVelocityOrFacingDirection();
+			FVector theirVelocityDirection = AI.VehicleFollower.FollowingVehicle->GetVelocityOrFacingDirection();
+			float dotVelocityDirections = FVector::DotProduct(ourVelocityDirection, theirVelocityDirection);
+			FVector closingVelocity = ourVelocity - theirVelocity;
+			float timeToTarget = distance / closingVelocity.Size();
+			float followingVehicleSpeed = AI.VehicleFollower.FollowingVehicle->GetSpeedKPH();
+			float minTime = 1.0f;
+			float maxTime = 4.0f;
+
+			// Bit rough and ready I know but I think this bit of back of envelope
+			// math will probably work pretty well.
+
+			if (timeToTarget < minTime)
+			{
+				if (dotVelocityDirections > 0.0f)
+				{
+					// Heading in same forward hemisphere.
+
+					AI.OptimumSpeed = followingVehicleSpeed * dotVelocityDirections * (timeToTarget / minTime);
+				}
+				else
+				{
+					// Heading in different hemispheres.
+
+					AI.OptimumSpeed = 20.0f;
+				}
+			}
+			else if (timeToTarget < maxTime)
+			{
+				if (dotVelocityDirections > 0.0f)
+				{
+					// Heading in same forward hemisphere.
+
+					float targetSpeed = followingVehicleSpeed * dotVelocityDirections;
+
+					AI.OptimumSpeed = FMath::Lerp(targetSpeed, AI.OptimumSpeed, (timeToTarget - minTime) / (maxTime - minTime));
+				}
+				else
+				{
+					// Heading in different hemispheres.
+
+					AI.OptimumSpeed = FMath::Max(100.0f, AI.OptimumSpeed * ((timeToTarget - minTime) / (maxTime - minTime)));
+				}
+			}
+		}
+
+#pragma endregion PickupGun
+
 #pragma region VehicleBoost
 
 		if (HasAIDriver() == true)
@@ -1049,6 +1113,49 @@ void ABaseVehicle::AIUpdateTargetsOfOpportunity(const FVector& location, const F
 
 	// If we're currently attracted towards something then see if we're still in range of that attraction.
 
+#pragma region PickupGun
+
+	if (AI.VehicleFollower.IsAttractionActive() == true)
+	{
+		// If we're following a vehicle then determine if we should continue to do that.
+
+		if (AI.VehicleFollower.LinkedToPickupSlot >= 0 &&
+			PickupSlots[AI.VehicleFollower.LinkedToPickupSlot].State != EPickupSlotState::Active)
+		{
+			AI.VehicleFollower.FollowingVehicle.Reset();
+		}
+		else
+		{
+			if (AIShouldContinueToFollow(location, direction, deltaSeconds) == false)
+			{
+				AI.VehicleFollower.FollowingVehicle.Reset();
+			}
+		}
+	}
+
+	if (AI.VehicleFollower.IsAttractionActive() == true)
+	{
+		// If we're still following a vehicle then hook into it now.
+
+		AI.AttractedTo = &AI.VehicleFollower;
+		AI.AttractedToActor = AI.VehicleFollower.FollowingVehicle;
+	}
+	else
+	{
+		// Otherwise cancel any attraction to the vehicle we may have been following.
+
+		if (AI.AttractedTo == &AI.VehicleFollower)
+		{
+			AICancelAttraction();
+
+			// Find nearest to current lap distance.
+
+			AIResetSplineFollowing(false);
+		}
+	}
+
+#pragma endregion PickupGun
+
 	if (GRIP_POINTER_VALID(AI.AttractedToActor) == true)
 	{
 		IAttractableInterface* attractedTo = AI.AttractedTo;
@@ -1180,6 +1287,69 @@ void FVehicleAI::RemovePursuitSplineTransition()
 	PursuitSplineWeavingRatio = 0.0f;
 	PursuitSplineTransitionSpeed = 0.0f;
 }
+
+#pragma region PickupGun
+
+/**
+* Should this vehicle continue to follow the given vehicle?
+***********************************************************************************/
+
+bool ABaseVehicle::AIShouldContinueToFollow(const FVector& location, const FVector& direction, float deltaSeconds)
+{
+	ABaseVehicle* vehicle = AI.VehicleFollower.FollowingVehicle.Get();
+
+	if (vehicle == nullptr ||
+		vehicle->IsVehicleDestroyed() == true ||
+		AI.VehicleFollower.IsAttractorInRange(location, direction, true) == false)
+	{
+		return false;
+	}
+
+	// Can this vehicle see the other vehicle?
+
+	FHitResult hit;
+
+	QueryParams.ClearIgnoredActors();
+	QueryParams.AddIgnoredActor(this);
+	QueryParams.AddIgnoredActor(vehicle);
+
+	// Can we still see the vehicle we're following?
+
+	FVector fromPosition = AI.VehicleFollower.GetAttractionLocation();
+
+	if (GetWorld()->LineTraceSingleByChannel(hit, location + GetLaunchDirection() * 100.0f, fromPosition + vehicle->GetLaunchDirection() * 100.0f, ABaseGameMode::ECC_LineOfSightTest, QueryParams) == true)
+	{
+		AI.VehicleFollower.VehicleHiddenTimer += deltaSeconds;
+	}
+	else
+	{
+		AI.VehicleFollower.VehicleHiddenTimer = 0.0f;
+	}
+
+	return (AI.VehicleFollower.VehicleHiddenTimer < 2.0f);
+}
+
+/**
+* Follow a vehicle while using a particular pickup against them.
+***********************************************************************************/
+
+void FVehicleAI::FollowVehicleWithPickup(ABaseVehicle* vehicle, int32 pickupSlot, float maxAngle, float trackingDistance)
+{
+	VehicleFollower.FollowingVehicle = vehicle;
+	VehicleFollower.LinkedToPickupSlot = pickupSlot;
+	VehicleFollower.VehicleHiddenTimer = 0.0f;
+	VehicleFollower.MaxAngle = maxAngle;
+	VehicleFollower.TrackingDistance = trackingDistance;
+}
+
+/**
+* Get the attraction location when following a vehicle.
+***********************************************************************************/
+
+FVector FVehicleFollower::GetAttractionLocation() const
+{ return (GRIP_POINTER_VALID(FollowingVehicle) == true) ? FollowingVehicle->GetActorLocation() : FVector::ZeroVector; }
+
+#pragma endregion PickupGun
 
 #pragma endregion AIAttraction
 
