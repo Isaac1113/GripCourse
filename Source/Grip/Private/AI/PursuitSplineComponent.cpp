@@ -2703,4 +2703,82 @@ bool UPursuitSplineComponent::GetContinuousSurfaceOverDistance(float distance, f
 
 #pragma endregion VehicleTeleport
 
+#pragma region PickupMissile
+
+/**
+* Is a distance along a route in open space?
+*
+* splineOffset should always be in spline space.
+***********************************************************************************/
+
+float FRouteFollower::GetClearanceOverDistance(float distance, float& overDistance, int32 direction, FVector worldLocation, FVector splineOffset, float clearanceAngle) const
+{
+	float c0 = 0.0f;
+	float c1 = 0.0f;
+
+	if (GRIP_POINTER_VALID(ThisSpline) == true)
+	{
+		c0 = c1 = ThisSpline->GetClearanceOverDistance(distance, overDistance, direction, worldLocation, splineOffset, clearanceAngle);
+	}
+
+	if (GRIP_POINTER_VALID(NextSpline) == true &&
+		NextSpline != ThisSpline)
+	{
+		c1 = NextSpline->GetClearanceOverDistance(NextSwitchDistance, overDistance, direction, worldLocation, splineOffset, clearanceAngle);
+	}
+
+	return FMath::Min(c0, c1);
+}
+
+/**
+* Get all the clearances at a distance along the spline.
+*
+* splineOffset should always be in spline space.
+***********************************************************************************/
+
+float UPursuitSplineComponent::GetClearanceOverDistance(float distance, float& overDistance, int32 direction, FVector worldLocation, FVector splineOffset, float clearanceAngle) const
+{
+	TArray<FPursuitPointExtendedData>& pursuitPointExtendedData = PursuitSplineParent->PointExtendedData;
+
+	if (pursuitPointExtendedData.Num() < 2)
+	{
+		return 0.0f;
+	}
+
+	float minClearance = -1.0f;
+	float length = GetSplineLength();
+	float endDistance = distance + (overDistance * direction);
+
+	if (IsClosedLoop() == false)
+	{
+		endDistance = ClampDistanceAgainstLength(endDistance, length);
+		overDistance -= FMath::Abs(endDistance - distance);
+	}
+	else
+	{
+		overDistance = 0.0f;
+	}
+
+	float iterationDistance = FMathEx::MetersToCentimeters(ExtendedPointMeters);
+	int32 numIterations = FMath::CeilToInt(FMath::Abs(endDistance - distance) / iterationDistance);
+	FVector offset = WorldSpaceToSplineSpace(worldLocation, distance, true);
+
+	for (int32 i = 0; i <= numIterations; i++)
+	{
+		float clearance = GetClearance(distance, offset, splineOffset, clearanceAngle, true, 0.0f);
+
+		if (minClearance < 0.0f ||
+			minClearance > clearance)
+		{
+			minClearance = clearance;
+		}
+
+		distance = ClampDistanceAgainstLength(distance + (iterationDistance * direction), length);
+	}
+
+	return minClearance;
+}
+
+#pragma endregion PickupMissile
+
 #pragma endregion NavigationSplines

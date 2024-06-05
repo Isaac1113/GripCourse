@@ -361,6 +361,14 @@ public:
 
 #pragma endregion VehicleTeleport
 
+#pragma region PickupMissile
+
+	// Is a distance along a spline in open space?
+	// splineOffset should always be in spline space.
+	float GetClearanceOverDistance(float distance, float& overDistance, int32 direction, FVector worldLocation, FVector splineOffset, float clearanceAngle = 90.0f) const;
+
+#pragma endregion PickupMissile
+
 };
 
 #pragma endregion NavigationSplines
@@ -630,6 +638,16 @@ public:
 	virtual FRotator GetCurvatureOverDistance(float distance, float& overDistance, int32 direction, const FQuat& withRespectTo, bool absolute) const override;
 
 #pragma endregion AIVehicleControl
+
+#pragma region PickupMissile
+
+public:
+
+	// Is a distance along a spline in open space?
+	// splineOffset should always be in spline space.
+	float GetClearanceOverDistance(float distance, float& overDistance, int32 direction, FVector worldLocation, FVector splineOffset, float clearanceAngle = 90.0f) const;
+
+#pragma endregion PickupMissile
 
 };
 

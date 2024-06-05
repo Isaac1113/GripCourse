@@ -31,6 +31,49 @@ void UHUDTargetingWidgetComponent::DrawPrimaryHoming(const UHUDTargetingWidgetCo
 		FMinimalViewInfo desiredView;
 
 		targetVehicle->Camera->GetCameraViewNoPostProcessing(0.0f, desiredView);
+
+#pragma region PickupMissile
+
+		for (AHomingMissile* missile : component->PlayGameMode->Missiles)
+		{
+			if (GRIP_OBJECT_VALID(missile) == true &&
+				GRIP_OBJECT_VALID(missile->Target) == true &&
+				missile->ShowHUDIndicator() == true &&
+				missile->GetLaunchVehicle() == targetVehicle)
+			{
+				FVector2D screenPosition;
+				FVector2D size = FVector2D(32.0f, 32.0f);
+				ITargetableInterface* target = Cast<ITargetableInterface>(missile->Target);
+
+				if (target != nullptr &&
+					component->PlayGameMode->ProjectWorldLocationToWidgetPosition(targetVehicle, target->GetTargetBullsEye(), screenPosition, &desiredView) == true)
+				{
+					FLinearColor color = FLinearColor(1.0f, 0.0f, 0.0f, globalOpacity);
+
+					screenPosition -= size * 0.5f;
+
+					if (missile->HasExploded() == false)
+					{
+						if (component->PlayGameMode->GetFlashingOpacity() < 0.01f)
+						{
+							continue;
+						}
+
+						color = FLinearColor(0.0f, 1.0f, 0.0f, globalOpacity);
+					}
+
+					if (missile->HUDTargetHit() == true)
+					{
+						color = FLinearColor(0.0f, 1.0f, 0.0f, globalOpacity);
+					}
+
+					UWidgetBlueprintLibrary::DrawBox(const_cast<FPaintContext&>(paintContext), screenPosition, size, slateBrush, color);
+				}
+			}
+		}
+
+#pragma endregion PickupMissile
+
 	}
 
 #pragma endregion VehicleHUD

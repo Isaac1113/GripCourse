@@ -138,6 +138,21 @@ void ADebugPickupsHUD::DrawHUD()
 
 		AddInt(TEXT("TunnelDiameter"), (int32)(tunnelDiameter / 100.0f));
 		AddRotator(TEXT("SplineDegrees"), splineDegrees);
+
+#pragma region PickupMissile
+
+		if (vehicle->GetAI().RouteFollower.IsValid() == true)
+		{
+			FVector location = vehicle->GetActorLocation();
+			FVector up = vehicle->GetAI().RouteFollower.ThisSpline->WorldSpaceToSplineSpace(vehicle->GetLaunchDirection(), vehicle->GetAI().RouteFollower.ThisDistance, false);
+			float overDistance = distanceAhead;
+			float clearanceUp = vehicle->GetAI().RouteFollower.GetClearanceOverDistance(vehicle->GetAI().RouteFollower.ThisDistance, overDistance, direction, location, up, 45.0f);
+
+			AddInt(TEXT("Clearance"), (int32)(clearanceUp / 100.0f));
+		}
+
+#pragma endregion PickupMissile
+
 	}
 }
 

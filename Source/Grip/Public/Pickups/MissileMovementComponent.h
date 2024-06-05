@@ -62,5 +62,98 @@ public:
 	UPROPERTY(Transient)
 		USceneComponent* HomingTargetComponent = nullptr;
 
+#pragma region PickupMissile
+
+	// Get the maximum speed we can travel.
+	virtual float GetMaxSpeed() const override
+	{ return FMathEx::KilometersPerHourToCentimetersPerSecond(MaximumSpeed); }
+
+	// When the simulation stops, just disconnect from the missile and stop updating it.
+	virtual void StopSimulating(const FHitResult& hitResult) override;
+
+	// Setup a false target to head towards when no real target is present.
+	void FalseTarget(const FVector& location, const FVector2D randomDrift)
+	{ TargetLocation = location; RandomDrift = randomDrift; }
+
+	// Get the current target location.
+	const FVector& GetTargetLocation() const
+	{ return TargetLocation; }
+
+	// Get the current homing target location.
+	FVector GetHomingTargetLocation() const;
+
+	// Ignite the motor of the homing missile.
+	void IgniteMotor()
+	{ Thrusting = true; Timer = 0.0f; }
+
+	// Set whether to lose lock on a target once the missile passes it.
+	void SetLoseLockOnRear(bool loseLock)
+	{ LoseLockOnRear = loseLock; }
+
+	// Get the time in seconds before impacting target (assuming straight terminal phase and constant speed).
+	float GetTimeToTarget() const;
+
+	// Is the missile likely to hit the target?
+	bool IsLikelyToHitTarget();
+
+	// Has the missile lock been lost for the target?
+	bool HasLostLock() const
+	{ return LockLost; }
+
+	// The target speed of the missile in KPH, or 0 for no target.
+	// Setting to non-zero will override AccelerationTime, and the missile will slow up as well speed up.
+	float TargetSpeed = 0.0f;
+
+	// The terrain direction for the missile, the direction that we should look to avoid collisions in, in world space.
+	FVector TerrainDirection = FVector(0.0f, 0.0f, -1.0f);
+
+	// Should we do terrain avoidance, and if non-zero then at which height?
+	float TerrainAvoidanceHeight = 0.0f;
+
+protected:
+
+	// Do the regular update tick.
+	virtual void TickComponent(float deltaSeconds, enum ELevelTick tickType, FActorComponentTickFunction* thisTickFunction) override;
+
+	// If the missile hits anything, then just stop simulating the movement on it.
+	virtual void HandleImpact(const FHitResult& hitResult, float deltaSeconds, const FVector& moveDelta) override;
+
+	// Compute the acceleration in meters per second that you want to apply to the projectile. This adjusts the current velocity.
+	virtual FVector ComputeAcceleration(const FVector& velocity, float deltaSeconds) override;
+
+private:
+
+	// Is the missile currently thrusting?
+	bool Thrusting = false;
+
+	// Lose lock on a target once the missile passes it?
+	bool LoseLockOnRear = true;
+
+	// Has the lock been lost with the target?
+	bool LockLost = false;
+
+	// Timer used for wobble in the missile path while tracking.
+	float TrackingWobble = 0.0f;
+
+	// The world location of the target if no actor is being tracked.
+	FVector TargetLocation = FVector::ZeroVector;
+
+	// The aim point when avoiding terrain.
+	FVector TerrainAimLocation = FVector::ZeroVector;
+
+	// The direction that the target is from the missile.
+	FVector TargetDirection = FVector::ZeroVector;
+
+	// The direction to aim for from the missile that avoids terrain.
+	FVector TerrainAimDirection = FVector::ZeroVector;
+
+	// Drift factor for missiles that have no target lock.
+	FVector2D RandomDrift = FVector2D::ZeroVector;
+
+	// Is the turning rate of the missile currently being arrested because it was trying to maneuver too hard?
+	bool ArrestingTurn = false;
+
+#pragma endregion PickupMissile
+
 	friend class ADebugMissileHUD;
 };

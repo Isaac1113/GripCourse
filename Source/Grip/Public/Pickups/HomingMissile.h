@@ -49,6 +49,17 @@ public:
 	// Get the unique index for the vehicle host.
 	virtual int32 GetVehicleIndex() const
 	{ return -1; }
+
+#pragma region PickupMissile
+
+	// Get the velocity of the host.
+	virtual FVector GetHostVelocity() const = 0;
+
+	// Get a false target location for a missile.
+	virtual FVector GetMissileFalseTarget() const = 0;
+
+#pragma endregion PickupMissile
+
 };
 
 /**
@@ -162,6 +173,187 @@ public:
 	// Audio component for the rocket sound.
 	UPROPERTY(Transient)
 		UAudioComponent* RocketAudio = nullptr;
+
+#pragma region PickupMissile
+
+	// Activate the pickup.
+	virtual void ActivatePickup(ABaseVehicle* launchVehicle, int32 pickupSlot, EPickupActivation activation, bool charged) override;
+
+	// Get the launch platform for the missile, this may or may not be a vehicle.
+	AActor* GetLaunchPlatform() const
+	{ return LaunchPlatform.Get(); }
+
+	// Called when the missile is moved at all.
+	virtual bool OnMove();
+
+	// Ignite the missile.
+	virtual void Ignite();
+
+	// Explode the missile.
+	virtual void Explode(AActor* hitActor, const FHitResult* hitResult);
+
+	// Set the initial impulse for the missile.
+	void SetInitialImpulse(const FVector& impulse) const
+	{ MissileMovement->Velocity = impulse; }
+
+	// Set the launcher velocity for the missile.
+	void SetLauncherVelocity(const FVector& velocity) const
+	{ MissileMovement->SetInheritedVelocity(velocity); }
+
+	// Get the current smoke trail color.
+	FVector GetSmokeColor();
+
+	// Get the current smoke trail alpha.
+	float GetSmokeAlpha();
+
+	// Get the current smoke trail size.
+	FVector GetSmokeSize();
+
+	// Show a HUD indicator?
+	bool ShowHUDIndicator() const
+	{ return LaunchVehicleIsValid() == true && (CurrentState != EState::Exploding || Timer < 2.0f); }
+
+	// Has the target been hit?
+	bool HUDTargetHit() const
+	{ return TargetHit; }
+
+	// Has the missile exploded?
+	bool HasExploded() const
+	{ return (CurrentState == EState::Exploding); }
+
+	// Attach to a launch platform, like a defense turret.
+	void AttachLaunchPlatform(AActor* launchPlatform);
+
+	// Setup a target for the missile to aim for.
+	void SetTarget(AActor* target, bool missTarget = false)
+	{ Target = target; MissTarget = missTarget; }
+
+	// Manually launch the missile, normally from a defense turret.
+	void Launch(const FVector& location, const FVector& velocity);
+
+	// Is the missile currently homing?
+	bool IsHoming() const
+	{ return (CurrentState == EState::Flight); }
+
+	// Is the target within reach?
+	// (about to be hit and good for cinematic effect)
+	bool IsTargetWithinReach() const
+	{ return TargetWithinReach; }
+
+	// Setup a false target for the missile to aim for in the absence of a real target.
+	void SetupFalseTarget();
+
+	// Get the time in seconds before impacting target (assuming straight terminal phase and constant speed).
+	float GetTimeToTarget() const;
+
+	// Is the missile likely to hit the target?
+	bool IsLikelyToHitTarget() const;
+
+	// Is the missile targeting a particular actor?
+	bool IsTargeting(AActor* actor) const
+	{ return (Target == actor && MissileMovement->HasLostLock() == false); }
+
+	// Select a target to aim for.
+	static bool SelectTarget(AActor* launchPlatform, FPlayerPickupSlot* launchPickup, AActor*& existingTarget, TArray<TWeakObjectPtr<AActor>>& targetList, float& weight, int32 maxTargets, bool speculative);
+
+	// Get the target location for a particular target.
+	static FVector GetTargetLocationFor(AActor* target, const FVector& targetOffset);
+
+	// Offset the targeting of the missile to cause a deliberate miss.
+	FVector HomingTargetOffset = FVector::ZeroVector;
+
+protected:
+
+	// Do some post initialization just before the game is ready to play.
+	virtual void PostInitializeComponents() override;
+
+	// Do some shutdown when the actor is being destroyed.
+	virtual void EndPlay(const EEndPlayReason::Type endPlayReason) override;
+
+	// Do the regular update tick.
+	virtual void Tick(float deltaSeconds) override;
+
+private:
+
+	enum class EState : uint8
+	{
+		Ejecting,
+		Flight,
+		Exploding
+	};
+
+	// Set the initial torque for the missile.
+	void SetInitialTorque(FRotator rotator, float roll, bool constrainUp);
+
+	// Is the missile in terminal range of the target?
+	bool IsInTerminalRange(AActor* target, float distance = -1.0f, float seconds = 1.0f) const;
+
+	// Record that this missile is imminently incoming on its target.
+	bool RecordIncoming();
+
+	// The launch platform for the missile, this may or may not be a vehicle.
+	TWeakObjectPtr<AActor> LaunchPlatform;
+
+	// The missile host interface for the launch platform.
+	IMissileHostInterface* MissileHost = nullptr;
+
+	// Has the target been hit?
+	bool TargetHit = false;
+
+	// Timer.
+	float Timer = 0.0f;
+
+	// Time to die at, if any.
+	float DieAt = 0.0f;
+
+	// The current state of the missile.
+	EState CurrentState = EState::Ejecting;
+
+	// Should we actually try to miss the target?
+	bool MissTarget = false;
+
+	// Is the target within reach?
+	// (about to be hit and good for cinematic effect)
+	bool TargetWithinReach = false;
+
+	// The natural intensity of the rocket motor.
+	float RocketIntensity = 0.0f;
+
+	// The last location of the missile, used for measuring distance.
+	FVector LastLocation = FVector::ZeroVector;
+	FVector LastSubLocation = FVector::ZeroVector;
+
+	// Has the missile entered the lethal range of the target?
+	bool InRangeOfTarget = false;
+
+	// Collision query for target visibility.
+	FCollisionQueryParams MissileToTargetQueryParams = FCollisionQueryParams("MissileTerrainSensor", true);
+
+	// Noise function for animating opacity in the missile trail.
+	FMathEx::FSineNoise OpacityNoise = FMathEx::FSineNoise(false);
+
+	// Noise function for animating brightness in the missile trail.
+	FMathEx::FSineNoise BrightnessNoise = FMathEx::FSineNoise(true);
+
+	// Noise function for animating size in the missile trail.
+	FMathEx::FSineNoise SizeNoise = FMathEx::FSineNoise(false);
+
+	// The natural size of the flare on the rocket motor.
+	float FlareSize = 0.0f;
+
+	// The natural aspect ratio of the flare on the rocket motor.
+	float FlareAspectRatio = 0.0f;
+
+	// The amount of time before ignition.
+	float IgnitionTime = 0.0f;
+
+	// Constrain the upward motion of the missile ejection on launch?
+	bool ConstrainUp = false;
+
+	// Some random drift if not homing towards a target.
+	FVector2D RandomDrift = FVector2D(0.0f, 0.0f);
+
+#pragma endregion PickupMissile
 
 	friend class ADebugMissileHUD;
 };

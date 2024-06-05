@@ -751,6 +751,53 @@ void ABaseVehicle::UsePickup(int32 pickupSlot, EPickupActivation activation, boo
 
 #pragma endregion PickupGun
 
+#pragma region PickupMissile
+
+		case EPickupType::HomingMissile:
+		{
+			FMissileEjection& ejectionState = EjectionState[pickupSlot];
+
+			if (release == true &&
+				MissilePortInUse == false &&
+				ejectionState.State == EMissileEjectionState::Inactive)
+			{
+				MissilePortInUse = true;
+
+				// Develop the list of missile targets.
+
+				float weight = 0.0f;
+				AActor* lastTarget = HUD.GetCurrentMissileTargetActor(pickupSlot);
+				int32 numTargets = (playerPickupSlot.IsCharged() == true) ? 2 : 1;
+
+				HUD.CurrentMissileTarget[pickupSlot] = -1;
+
+				ejectionState.PickupTargets.Empty();
+
+				AHomingMissile::SelectTarget(this, &playerPickupSlot, lastTarget, ejectionState.PickupTargets, weight, numTargets, AI.BotDriver);
+
+				playerPickupSlot.Activation = activation;
+
+				playerPickupSlot.Pickup.Reset();
+				playerPickupSlot.Timer = 0.0f;
+				playerPickupSlot.State = EPickupSlotState::Active;
+
+				ejectionState.State = EMissileEjectionState::BayOpening;
+
+				FGameEvent gameEvent;
+
+				gameEvent.LaunchVehicleIndex = VehicleIndex;
+				gameEvent.TargetVehicleIndex = -1;
+				gameEvent.PickupUsed = playerPickupSlot.Type;
+				gameEvent.PickupUsedWasCharged = playerPickupSlot.IsCharged();
+				gameEvent.EventType = EGameEventType::Preparing;
+
+				PlayGameMode->AddGameEvent(gameEvent);
+			}
+		}
+		break;
+
+#pragma endregion PickupMissile
+
 		default:
 			break;
 		}
@@ -835,6 +882,12 @@ EPickupType ABaseVehicle::DeterminePickup(APickup* pickup)
 				raceProbabilities[section][(int32)EPickupType::TurboBoost] = raceRow->TurboBoost;
 
 #pragma endregion PickupTurbo
+
+#pragma region PickupMissile
+
+				raceProbabilities[section][(int32)EPickupType::HomingMissile] = raceRow->HomingMissile;
+
+#pragma endregion PickupMissile
 
 #pragma region PickupGun
 
@@ -1092,6 +1145,17 @@ void ABaseVehicle::DetermineTargets(float deltaSeconds, const FVector& location,
 			{
 				float weight = 0.0f;
 
+#pragma region PickupMissile
+
+				if (PickupSlots[pickupSlot].Type == EPickupType::HomingMissile)
+				{
+					AActor* newTarget = missileTarget;
+
+					AHomingMissile::SelectTarget(this, nullptr, newTarget, targets, weight, 4, AI.BotDriver);
+				}
+
+#pragma endregion PickupMissile
+
 #pragma region PickupGun
 
 				if (PickupSlots[pickupSlot].Type == EPickupType::GatlingGun)
@@ -1182,6 +1246,27 @@ void ABaseVehicle::DetermineTargets(float deltaSeconds, const FVector& location,
 
 				for (int32 i = 0; i < HUD.PickupTargets[pickupSlot].Num(); i++)
 				{
+
+#pragma region PickupMissile
+
+					if (HUD.PickupTargets[pickupSlot][i].Target.Get() == missileTarget)
+					{
+						HUD.CurrentMissileTarget[pickupSlot] = i;
+						HUD.TargetLocation[pickupSlot] = AHomingMissile::GetTargetLocationFor(missileTarget, FVector::ZeroVector);
+
+						if (HUD.SwitchTargetTimer != 0.0f)
+						{
+							if (GRIP_POINTER_VALID(HUD.LastTarget[pickupSlot]))
+							{
+								HUD.LastTargetLocation[pickupSlot] = AHomingMissile::GetTargetLocationFor(HUD.LastTarget[pickupSlot].Get(), FVector::ZeroVector);
+							}
+
+							HUD.TargetLocation[pickupSlot] = FMath::Lerp(HUD.TargetLocation[pickupSlot], HUD.LastTargetLocation[pickupSlot], HUD.SwitchTargetTimer);
+						}
+					}
+
+#pragma endregion PickupMissile
+
 					HUD.PickupTargets[pickupSlot][i].TargetTimer += deltaSeconds;
 					HUD.PickupTargets[pickupSlot][i].TargetTimer = FMath::Min(1.0f, HUD.PickupTargets[pickupSlot][i].TargetTimer);
 				}
@@ -1247,6 +1332,28 @@ void ABaseVehicle::DetermineTargets(float deltaSeconds, const FVector& location,
 
 		// If we have two pickups of the same type, ensure the second pickup isn't targeting the same target
 		// as the first where possible.
+
+#pragma region PickupMissile
+
+		if (PickupSlots[0].Type == PickupSlots[1].Type &&
+			HUD.PickupTargets[0].IsValidIndex(HUD.CurrentMissileTarget[0]) == true &&
+			HUD.PickupTargets[1].IsValidIndex(HUD.CurrentMissileTarget[1]) == true &&
+			HUD.PickupTargets[0][HUD.CurrentMissileTarget[0]].Target.Get() == HUD.PickupTargets[1][HUD.CurrentMissileTarget[1]].Target.Get())
+		{
+			int32 pickupSlot = 1;
+
+			if (HUD.PickupTargets[pickupSlot].Num() > 1)
+			{
+				HUD.LastTarget[pickupSlot] = HUD.GetCurrentMissileTargetActor(pickupSlot);
+				HUD.LastTargetLocation[pickupSlot] = AHomingMissile::GetTargetLocationFor(HUD.LastTarget[pickupSlot].Get(), FVector::ZeroVector);
+
+				HUD.CurrentMissileTarget[pickupSlot] = (HUD.CurrentMissileTarget[pickupSlot] + 1) % HUD.PickupTargets[pickupSlot].Num();
+				HUD.SwitchTargetTimer = (HUD.LastTarget[pickupSlot].IsValid() == true) ? 1.0f : 0.0f;
+			}
+		}
+
+#pragma endregion PickupMissile
+
 	}
 }
 
@@ -1308,6 +1415,17 @@ void ABaseVehicle::ReleasePickupSlot(int32 pickupSlot, bool animate)
 
 	if (playerPickupSlot.State == EPickupSlotState::Active)
 	{
+
+#pragma region PickupMissile
+
+		if (playerPickupSlot.Type == EPickupType::HomingMissile)
+		{
+			MissilePortInUse = false;
+			EjectionState[pickupSlot].State = EMissileEjectionState::Inactive;
+		}
+
+#pragma endregion PickupMissile
+
 	}
 
 	if (playerPickupSlot.State != EPickupSlotState::Used &&
@@ -1339,6 +1457,34 @@ void ABaseVehicle::ReleasePickupSlot(int32 pickupSlot, bool animate)
 
 void ABaseVehicle::SwitchPickupTarget(int32 pickupSlot)
 {
+
+#pragma region PickupMissile
+
+	int32 start = pickupSlot;
+	int32 end = pickupSlot;
+
+	if (pickupSlot == -1)
+	{
+		start = 0;
+		end = NumPickups - 1;
+	}
+
+	for (pickupSlot = start; pickupSlot <= end; pickupSlot++)
+	{
+		if (HUD.PickupTargets[pickupSlot].Num() > 1)
+		{
+			HUD.LastTarget[pickupSlot] = HUD.GetCurrentMissileTargetActor(pickupSlot);
+			HUD.LastTargetLocation[pickupSlot] = AHomingMissile::GetTargetLocationFor(HUD.LastTarget[pickupSlot].Get(), FVector::ZeroVector);
+
+			HUD.CurrentMissileTarget[pickupSlot] = (HUD.CurrentMissileTarget[pickupSlot] + 1) % HUD.PickupTargets[pickupSlot].Num();
+			HUD.SwitchTargetTimer = (HUD.LastTarget[pickupSlot].IsValid() == true) ? 1.0f : 0.0f;
+
+			break;
+		}
+	}
+
+#pragma endregion PickupMissile
+
 }
 
 /**
@@ -1543,3 +1689,527 @@ FVector ABaseVehicle::EjectGunRound(int32 roundLocation, bool charged)
 }
 
 #pragma endregion PickupGun
+
+#pragma region PickupMissile
+
+/**
+* Apply a direct explosion force.
+***********************************************************************************/
+
+bool ABaseVehicle::ExplosionForce(float strength, int32 hitPoints, int32 aggressorVehicleIndex, const FVector& location, bool limitForces, EPickupType source, bool destroyShield, bool applyForces, FColor color, FGameEvent* gameEvent)
+{
+	VehicleMesh->IdleUnlock();
+
+	ResetAttackTimer();
+
+	ShakeHUD(1.5f);
+	ShakeCamera(2.5f);
+
+	{
+		Camera->Shock(false, 1.0f);
+
+		if (applyForces == true)
+		{
+			if (gameEvent != nullptr)
+			{
+				PlayGameMode->AddGameEvent(*gameEvent);
+			}
+		}
+
+		float massScale = Physics.CurrentMass / 5000.0f;
+		FVector difference = GetActorLocation() - location;
+		const FTransform& transform = VehicleMesh->GetComponentTransform();
+		bool isSecondary = ((VehicleClock - LastExploded) < 3.0f && IsAirborne() == true);
+
+		// General explosion force.
+
+		difference.Normalize();
+
+		FVector direction = (difference * 20000000.0f * strength);
+		direction = transform.InverseTransformVector(direction);
+		direction.Z = 0.0f;
+
+		if (limitForces == true)
+		{
+			// Not so much side-spin.
+
+			direction.Y *= 0.1f;
+		}
+
+		direction = transform.TransformVector(direction);
+
+		FVector side = FVector(0.0f, FMathEx::UnitSign(FVector::DotProduct(difference, transform.GetUnitAxis(EAxis::Y))), 0.0f);
+
+		if (IsPracticallyGrounded() == true)
+		{
+			// Specific upward force just to loosen tire grip.
+
+			direction += GetLaunchDirection() * 7500000.0f * strength;
+		}
+
+		// Some random sideways force.
+
+		if (limitForces == true)
+		{
+			direction *= 0.5f;
+			side *= 2000.0f * strength;
+		}
+		else
+		{
+			side *= 15000.0f * strength;
+		}
+
+		side = transform.TransformVector(side);
+		side *= massScale;
+		direction *= massScale;
+
+		if (applyForces == true &&
+			PlayGameMode->PastGameSequenceStart() == true)
+		{
+			if (isSecondary == true)
+			{
+				if (FVector::DotProduct(direction, GetLaunchDirection()) < 0.0f)
+				{
+					direction *= -1.0f;
+				}
+			}
+
+			if (FVector::DistSquared(Wheels.RearAxlePosition, location) < FVector::DistSquared(Wheels.FrontAxlePosition, location))
+			{
+				if (isSecondary == true)
+				{
+					VehicleMesh->AddImpulseAtLocation(direction * 0.5f, Wheels.RearAxlePosition);
+				}
+				else
+				{
+					VehicleMesh->AddImpulseAtLocation(direction, Wheels.RearAxlePosition);
+					VehicleMesh->AddImpulseAtLocation(side, Wheels.RearAxlePosition + ((Wheels.RearAxlePosition - Wheels.FrontAxlePosition) * 100.0f));
+				}
+			}
+			else
+			{
+				if (isSecondary == true)
+				{
+					VehicleMesh->AddImpulseAtLocation(direction * 0.5f, Wheels.FrontAxlePosition);
+				}
+				else
+				{
+					// Handle the reduction of explosion forces if the missile was in front of the vehicle when it exploded
+					// and the player is apparently braking to evade it.
+
+					float acceleration = (AI.Speed.DifferenceFromPerSecond(VehicleClock - 0.75f, VehicleClock, GetSpeedMPS() * 100.0f) / 100.0f);
+
+					if (acceleration < -25.0f)
+					{
+						side *= 0.25f;
+						direction *= 0.25f;
+					}
+
+					VehicleMesh->AddImpulseAtLocation(direction, Wheels.FrontAxlePosition);
+					VehicleMesh->AddImpulseAtLocation(side, Wheels.FrontAxlePosition + ((Wheels.FrontAxlePosition - Wheels.RearAxlePosition) * 100.0f));
+				}
+			}
+
+#pragma region VehicleAntiGravity
+
+			CutAirPower(1.0f);
+
+#pragma endregion VehicleAntiGravity
+
+			LastExploded = VehicleClock;
+		}
+
+		return true;
+	}
+}
+
+/**
+* Apply a peripheral explosion force.
+***********************************************************************************/
+
+void ABaseVehicle::PeripheralExplosionForce(float strength, int32 hitPoints, int32 aggressorVehicleIndex, const FVector& location, bool limitForces, FColor color)
+{
+	if (strength > KINDA_SMALL_NUMBER)
+	{
+		VehicleMesh->IdleUnlock();
+
+		ShakeHUD(1.25f);
+		ShakeCamera(1.75f);
+
+		{
+			float massScale = Physics.CurrentMass / 5000.0f;
+			FVector difference = GetActorLocation() - location;
+			const FTransform& transform = VehicleMesh->GetComponentTransform();
+
+			// General explosion force.
+
+			difference.Normalize();
+
+			FVector direction = (difference * 20000000.0f * strength);
+			direction = transform.InverseTransformVector(direction);
+			direction.Z = 0.0f;
+
+			if (limitForces == true)
+			{
+				// Not so much side-spin.
+
+				direction.Y *= 0.1f;
+			}
+
+			direction = transform.TransformVector(direction);
+
+			FVector side = FVector(0.0f, FMathEx::UnitSign(FVector::DotProduct(difference, transform.GetUnitAxis(EAxis::Y))), 0.0f);
+
+			if (IsPracticallyGrounded() == false)
+			{
+				// Specific upward force just to loosen tire grip.
+
+				direction += GetLaunchDirection() * 4000000.0f * strength;
+			}
+
+			// Some random sideways force.
+
+			if (limitForces == true)
+			{
+				direction *= 0.5f;
+				side *= 2000.0f * strength;
+			}
+			else
+			{
+				side *= 5000.0f * strength;
+			}
+
+			side = transform.TransformVector(side);
+			side *= massScale;
+			direction *= massScale;
+
+			if (PlayGameMode->PastGameSequenceStart() == true)
+			{
+				if (FVector::DistSquared(Wheels.RearAxlePosition, location) < FVector::DistSquared(Wheels.FrontAxlePosition, location))
+				{
+					VehicleMesh->AddImpulseAtLocation(direction, Wheels.RearAxlePosition);
+					VehicleMesh->AddImpulseAtLocation(side, Wheels.RearAxlePosition + ((Wheels.RearAxlePosition - Wheels.FrontAxlePosition) * 100.0f));
+				}
+				else
+				{
+					VehicleMesh->AddImpulseAtLocation(direction, Wheels.FrontAxlePosition);
+					VehicleMesh->AddImpulseAtLocation(side, Wheels.FrontAxlePosition + ((Wheels.FrontAxlePosition - Wheels.RearAxlePosition) * 100.0f));
+				}
+			}
+		}
+	}
+}
+
+/**
+* Apply a peripheral explosion force.
+***********************************************************************************/
+
+void ABaseVehicle::PeripheralExplosionForce(float strength, int32 hitPoints, int32 aggressorVehicleIndex, const FVector& location, bool limitForces, FColor color, ABaseVehicle* avoid, UWorld* world, float radius)
+{
+	GRIP_GAME_MODE_LIST_FOR(GetVehicles(), vehicles, world);
+
+	for (ABaseVehicle* vehicle : vehicles)
+	{
+		if (vehicle != avoid)
+		{
+			FVector targetPosition = vehicle->GetCenterLocation();
+			FVector difference = targetPosition - location;
+			float distance = difference.Size();
+
+			if (distance < radius * 2.0f)
+			{
+				if (distance < radius)
+				{
+					float ratio = (distance / radius);
+
+					ratio = FMath::Cos(ratio * PI * 0.5f);
+
+					float thisStrength = strength;
+
+					if (aggressorVehicleIndex == vehicle->VehicleIndex)
+					{
+						thisStrength *= 0.25f;
+					}
+
+					vehicle->PeripheralExplosionForce(thisStrength * ratio, hitPoints * ratio, aggressorVehicleIndex, location, limitForces, color);
+				}
+				else
+				{
+					vehicle->ShakeHUD(1.0f);
+					vehicle->ShakeCamera(1.0f);
+				}
+			}
+		}
+	}
+}
+
+/**
+* Apply a missile explosion force.
+***********************************************************************************/
+
+bool ABaseVehicle::MissileForce(float strength, int32 hitPoints, int32 aggressorVehicleIndex, const FVector& location, bool limitForces, bool destroyShield, FGameEvent* gameEvent)
+{
+	return ExplosionForce(strength, hitPoints, aggressorVehicleIndex, location, limitForces, EPickupType::HomingMissile, destroyShield, true, FColor(255, 64, 0), gameEvent);
+}
+
+/**
+* Get a false target location for a missile.
+***********************************************************************************/
+
+FVector ABaseVehicle::GetMissileFalseTarget() const
+{
+	FVector up = GetLaunchDirection();
+	FVector forward = GetFacingDirection();
+	FVector position = (forward * 100.0f * 5000.0f) + (up * 100.0f * 500.0f);
+
+	return position + GetActorLocation();
+}
+
+/**
+* Update any active missiles firing from the vehicle.
+***********************************************************************************/
+
+void ABaseVehicle::UpdateMissiles(float deltaSeconds)
+{
+	// Handle the ejection of homing missiles.
+
+	static float scorpionTimes[] = { 0.15f, 0.7f };
+
+	for (int32 i = 0; i < NumPickups; i++)
+	{
+		if (EjectionState[i].State != EMissileEjectionState::Inactive)
+		{
+			switch (EjectionState[i].State)
+			{
+			case EMissileEjectionState::BayOpening:
+				if (PickupSlots[i].Timer > scorpionTimes[0])
+				{
+					FireHomingMissile(i, 0);
+					EjectionState[i].State = (PickupSlots[i].IsCharged() == true) ? EMissileEjectionState::Firing1 : EMissileEjectionState::Firing2;
+				}
+				break;
+
+			case EMissileEjectionState::Firing1:
+				if (PickupSlots[i].Timer > scorpionTimes[1])
+				{
+					FireHomingMissile(i, 1);
+					EjectionState[i].State = EMissileEjectionState::Firing2;
+				}
+				break;
+
+			case EMissileEjectionState::Firing2:
+				ReleasePickupSlot(i);
+				break;
+			}
+		}
+	}
+
+	// Now handle the homing missile audio visual indicator.
+
+	HUD.HomingMissileTime = 0.0f;
+
+	if (IsHumanPlayer() == true &&
+		IsCinematicCameraActive() == false)
+	{
+		float clipDistance = 100.0f * 100.0f;
+		float maxDistance = 1000.0f * 100.0f;
+		float minDistance = maxDistance;
+		AActor* viewVehicle = GetController()->GetViewTarget();
+
+		if (viewVehicle == nullptr)
+		{
+			viewVehicle = this;
+		}
+
+		FVector location = viewVehicle->GetActorLocation();
+
+		GRIP_GAME_MODE_LIST_FROM(Missiles, missiles, PlayGameMode);
+
+		for (AHomingMissile* missile : missiles)
+		{
+			if (missile->Target == viewVehicle &&
+				missile->IsHoming() == true)
+			{
+				float distance = (missile->GetActorLocation() - location).Size();
+
+				if (minDistance > distance)
+				{
+					minDistance = distance;
+				}
+			}
+		}
+
+		if (minDistance < maxDistance)
+		{
+			minDistance = FMath::Clamp(minDistance, clipDistance, maxDistance);
+
+			HUD.HomingMissileTime = minDistance / maxDistance;
+			HUD.HomingMissileTimer -= deltaSeconds;
+
+			if (HUD.HomingMissileTimer <= 0.0f)
+			{
+				HUD.MissileWarningTimer = 1.0f;
+				HUD.HomingMissileTimer = HUD.HomingMissileTime;
+
+				float pitch = 1.0f;
+
+				ClientPlaySound(HUD.HomingMissileIndicatorSound, 1.0f, pitch);
+			}
+		}
+
+		// Handle all of the HUD warnings, which display a vignette of a specific color
+		// representing what it is that it's warning us about.
+
+		float warningAmount = 0.0f;
+		float warningDecrement = 1.0f;
+
+		if (HUD.WarningSource == EHUDWarningSource::Elimination)
+		{
+			warningDecrement = 4.0f;
+		}
+		else if (HUD.WarningSource == EHUDWarningSource::DoubleDamage)
+		{
+			warningDecrement = 2.0f;
+		}
+
+		HUD.WarningTimer -= deltaSeconds * warningDecrement;
+
+		if (HUD.WarningTimer <= 0.0f)
+		{
+			HUD.WarningTimer = 0.0f;
+			HUD.WarningSource = EHUDWarningSource::None;
+		}
+
+		if (HUD.WarningTimer > 0.0f)
+		{
+			float clock = FMath::Frac(1.0f - HUD.WarningTimer);
+
+			warningAmount = (clock < 0.5f) ? 1.0f - (clock * 2.0f) : 0.0f;
+		}
+
+		float ratio = FMathEx::GetSmoothingRatio(0.666f, deltaSeconds);
+
+		HUD.WarningAmount = (HUD.WarningAmount * ratio) + (warningAmount * (1.0f - ratio));
+
+		warningAmount = 0.0f;
+
+		HUD.MissileWarningTimer -= deltaSeconds * 4.0f;
+		HUD.MissileWarningTimer = FMath::Max(HUD.MissileWarningTimer, 0.0f);
+
+		if (HUD.MissileWarningTimer > 0.0f)
+		{
+			float clock = FMath::Frac(1.0f - HUD.MissileWarningTimer);
+
+			warningAmount = ((clock < 0.5f) ? 1.0f - clock * 2.0f : 0.0f) * 2.0f;
+		}
+
+		HUD.MissileWarningAmount = (HUD.MissileWarningAmount * ratio) + (warningAmount * (1.0f - ratio));
+	}
+}
+
+/**
+* Get the bone name of the missile bay to use in the vehicle's current condition.
+***********************************************************************************/
+
+FName ABaseVehicle::GetMissileBayName() const
+{
+	return ((IsFlipped() == false) ? FName("MissileBay_T_Eject") : FName("MissileBay_B_Eject"));
+}
+
+/**
+* Fire a homing missile.
+***********************************************************************************/
+
+void ABaseVehicle::FireHomingMissile(int32 pickupSlot, int32 missileIndex)
+{
+	UWorld* world = GetWorld();
+
+	if (world != nullptr)
+	{
+		FActorSpawnParameters spawnParams;
+
+		spawnParams.Owner = this;
+		spawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		FVector location = VehicleMesh->GetBoneLocation(GetMissileBayName());
+		FVector direction = location - GetCenterLocation();
+
+		direction.X = 0.0f;
+		direction.Z = 0.0f;
+		direction.Normalize();
+
+		FVector launchLocation = location + (direction * 20.0f);
+		FRotator launchRotation = GetActorRotation();
+		EPickupType type = PickupSlots[pickupSlot].Type;
+		bool charged = PickupSlots[pickupSlot].IsCharged();
+		AHomingMissile* missile = nullptr;
+
+		if (type == EPickupType::HomingMissile)
+		{
+			if (charged == false)
+			{
+				missile = world->SpawnActor<AHomingMissile>(Level1MissileBlueprint, launchLocation, launchRotation, spawnParams);
+			}
+			else
+			{
+				missile = world->SpawnActor<AHomingMissile>(Level2MissileBlueprint, launchLocation, launchRotation, spawnParams);
+			}
+		}
+		else
+		{
+			return;
+		}
+
+		if (missile != nullptr)
+		{
+			HomingMissile = missile;
+
+			AActor* target = (EjectionState[pickupSlot].PickupTargets.Num() > 0) ? EjectionState[pickupSlot].PickupTargets[missileIndex % EjectionState[pickupSlot].PickupTargets.Num()].Get() : nullptr;
+
+			missile->SetTarget(target);
+			missile->ActivatePickup(this, pickupSlot, EPickupActivation::Released, charged);
+
+			if (missile->Target != nullptr)
+			{
+				FGameEvent gameEvent;
+				ABaseVehicle* targetVehicle = Cast<ABaseVehicle>(missile->Target);
+
+				gameEvent.LaunchVehicleIndex = VehicleIndex;
+				gameEvent.TargetVehicleIndex = (targetVehicle != nullptr) ? targetVehicle->VehicleIndex : -1;
+				gameEvent.PickupUsed = type;
+				gameEvent.PickupUsedWasCharged = missile->IsCharged();
+				gameEvent.EventType = EGameEventType::Used;
+
+				PlayGameMode->AddGameEvent(gameEvent);
+			}
+		}
+	}
+}
+
+/**
+* Get the sustained angular pitch velocity over the last quarter second.
+***********************************************************************************/
+
+float ABaseVehicle::GetSustainedAngularPitch()
+{
+	float sustained = Physics.AngularPitchList.GetMeanValue(Physics.Timing.TickSum - 0.25f);
+
+	if (IsGrounded() == true)
+	{
+		float angVelocity = -Physics.VelocityData.AngularVelocity.Y;
+		float scale = angVelocity / sustained;
+
+		scale = FMath::Clamp(scale, 1.0f, 1.25f);
+
+		return sustained * scale;
+	}
+
+	if (IsPracticallyGrounded() == true)
+	{
+		return sustained;
+	}
+
+	return 0.0f;
+}
+
+#pragma endregion PickupMissile

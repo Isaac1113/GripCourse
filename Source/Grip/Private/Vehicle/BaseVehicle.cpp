@@ -94,6 +94,20 @@ ABaseVehicle::ABaseVehicle()
 
 #pragma endregion PickupGun
 
+#pragma region PickupMissile
+
+	{
+		static ConstructorHelpers::FObjectFinder<UClass> asset(TEXT("'/Game/Pickups/Weapons/Missile/BP_Level1Missile.BP_Level1Missile_C'"));
+		Level1MissileBlueprint = (UClass*)asset.Object;
+	}
+
+	{
+		static ConstructorHelpers::FObjectFinder<UClass> asset(TEXT("'/Game/Pickups/Weapons/Missile/BP_Level2Missile.BP_Level2Missile_C'"));
+		Level2MissileBlueprint = (UClass*)asset.Object;
+	}
+
+#pragma endregion PickupMissile
+
 #pragma region PickupTurbo
 
 	{
@@ -907,6 +921,12 @@ void ABaseVehicle::Tick(float deltaSeconds)
 #pragma region VehiclePickups
 
 	UpdatePickupSlots(deltaSeconds);
+
+#pragma region PickupMissile
+
+	UpdateMissiles(deltaSeconds);
+
+#pragma endregion PickupMissile
 
 	DetermineTargets(deltaSeconds, transform.GetTranslation(), xdirection);
 

@@ -2040,6 +2040,80 @@ private:
 
 #pragma endregion PickupGun
 
+#pragma region PickupMissile
+
+public:
+
+	// Get the velocity of the host.
+	virtual FVector GetHostVelocity() const override
+	{ return VehicleMesh->GetPhysicsLinearVelocity(); }
+
+	// Get a false target location for a missile.
+	virtual FVector GetMissileFalseTarget() const override;
+
+	// Get the current homing missile, if any.
+	TWeakObjectPtr<AHomingMissile>& GetHomingMissile()
+	{ return HomingMissile; }
+
+	// Apply a missile explosion force.
+	bool MissileForce(float strength, int32 hitPoints, int32 aggressorVehicleIndex, const FVector& location, bool limitForces, bool destroyShield, FGameEvent* gameEvent);
+
+	// Get the sustained angular pitch velocity over the last quarter second.
+	float GetSustainedAngularPitch();
+
+	// Apply a peripheral explosion force.
+	static void PeripheralExplosionForce(float strength, int32 hitPoints, int32 aggressorVehicleIndex, const FVector& location, bool limitForces, FColor color, ABaseVehicle* avoid, UWorld* world, float radius);
+
+private:
+
+	// Fire a homing missile.
+	void FireHomingMissile(int32 pickupSlot, int32 missileIndex);
+
+	// Apply a direct explosion force.
+	bool ExplosionForce(float strength, int32 hitPoints, int32 aggressorVehicleIndex, const FVector& location, bool limitForces, EPickupType source, bool destroyShield, bool applyForces, FColor color, FGameEvent* gameEvent);
+
+	// Apply a peripheral explosion force.
+	void PeripheralExplosionForce(float strength, int32 hitPoints, int32 aggressorVehicleIndex, const FVector& location, bool limitForces, FColor color);
+
+	FName GetMissileBayName() const;
+
+	// Update any active missiles firing from the vehicle.
+	void UpdateMissiles(float deltaSeconds);
+
+	// The missile ejection state.
+	enum class EMissileEjectionState : uint8
+	{
+		Inactive,
+		BayOpening,
+		Firing1,
+		Firing2
+	};
+
+	// Small structure for handling missile ejection.
+	struct FMissileEjection
+	{
+		EMissileEjectionState State = EMissileEjectionState::Inactive;
+
+		TArray<TWeakObjectPtr<AActor>> PickupTargets;
+	};
+
+	// Ejection state of missiles for each of the pickup slots.
+	FMissileEjection EjectionState[NumPickups];
+
+	// The last homing missile that was fired, if any.
+	TWeakObjectPtr<AHomingMissile> HomingMissile;
+
+	// Is the missile port currently in use?
+	bool MissilePortInUse = false;
+
+	// Is a missile currently incoming on the vehicle?
+	bool IncomingMissile = false;
+
+	// The time at which the vehicle last exploded.
+	float LastExploded = 0.0f;
+
+#pragma endregion PickupMissile
+
 #pragma region PickupShield
 
 public:
