@@ -278,6 +278,17 @@ void UFlippableSpringArmComponent::UpdateDesiredArmProperties(const FTransform& 
 
 		targetLength.InterpEaseInOut(CameraOffsetFrom, CameraOffsetTo, CameraOffsetTime, 2.0f);
 
+#pragma region PickupShield
+
+		float shieldExtension = vehicle->GetForwardShieldExtension();
+
+		if (FMath::Abs(targetLength.ZOffset) < 150.0f * shieldExtension)
+		{
+			targetLength.ZOffset = 150.0f * shieldExtension * FMath::Sign(targetLength.ZOffset);
+		}
+
+#pragma endregion PickupShield
+
 		CameraOffsetTime = FMath::Min(CameraOffsetTime + deltaSeconds * 2.0f, 1.0f);
 
 		// We have different levels of lag depending on where the camera is relative to the vehicle.

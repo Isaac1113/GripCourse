@@ -798,6 +798,60 @@ void ABaseVehicle::UsePickup(int32 pickupSlot, EPickupActivation activation, boo
 
 #pragma endregion PickupMissile
 
+#pragma region PickupShield
+
+		case EPickupType::Shield:
+		{
+			if (release == true)
+			{
+				if (GRIP_POINTER_VALID(Shield) == false)
+				{
+					if (playerPickupSlot.IsCharged() == true)
+					{
+						if (Level2ShieldBlueprint != nullptr)
+						{
+							Shield = GetWorld()->SpawnActor<AShield>(Level2ShieldBlueprint, VehicleMesh->GetComponentLocation(), VehicleMesh->GetComponentRotation(), spawnParams);
+						}
+					}
+					else
+					{
+						if (Level1ShieldBlueprint != nullptr)
+						{
+							Shield = GetWorld()->SpawnActor<AShield>(Level1ShieldBlueprint, VehicleMesh->GetComponentLocation(), VehicleMesh->GetComponentRotation(), spawnParams);
+						}
+					}
+
+					if (GRIP_POINTER_VALID(Shield) == true)
+					{
+						playerPickupSlot.Activation = activation;
+
+						Shield->ActivatePickup(this, pickupSlot, activation, playerPickupSlot.IsCharged());
+
+						playerPickupSlot.Pickup = Shield;
+						playerPickupSlot.Timer = 0.0f;
+						playerPickupSlot.State = EPickupSlotState::Active;
+
+						FGameEvent gameEvent;
+
+						gameEvent.LaunchVehicleIndex = VehicleIndex;
+						gameEvent.TargetVehicleIndex = -1;
+						gameEvent.PickupUsed = playerPickupSlot.Type;
+						gameEvent.PickupUsedWasCharged = playerPickupSlot.IsCharged();
+						gameEvent.EventType = EGameEventType::Used;
+
+						PlayGameMode->AddGameEvent(gameEvent);
+					}
+				}
+				else
+				{
+					PlayDeniedSound();
+				}
+			}
+		}
+		break;
+
+#pragma endregion PickupShield
+
 		default:
 			break;
 		}
@@ -876,6 +930,12 @@ EPickupType ABaseVehicle::DeterminePickup(APickup* pickup)
 				{
 					raceProbabilities[section][i] = 0.0f;
 				}
+
+#pragma region PickupShield
+
+				raceProbabilities[section][(int32)EPickupType::Shield] = raceRow->Shield;
+
+#pragma endregion PickupShield
 
 #pragma region PickupTurbo
 
@@ -1510,6 +1570,121 @@ bool ABaseVehicle::PickupIsCharging(bool ignoreTurbos)
 
 #pragma endregion VehiclePickups
 
+#pragma region PickupShield
+
+/**
+* Is a shield currently active on the vehicle?
+***********************************************************************************/
+
+bool ABaseVehicle::IsShieldActive() const
+{
+	return GRIP_POINTER_VALID(Shield) && Shield->IsActive();
+}
+
+/**
+* Is a shield currently active on the vehicle and protecting against a given
+* position?
+***********************************************************************************/
+
+bool ABaseVehicle::IsShielded(const FVector& position) const
+{
+	if (GRIP_POINTER_VALID(Shield) == true)
+	{
+		if (Shield->RearOnly == true)
+		{
+			FVector difference = VehicleMesh->GetComponentTransform().InverseTransformVector(position - GetCenterLocation());
+
+			return (difference.X < 0.0f);
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
+/**
+* Release any active shield.
+***********************************************************************************/
+
+void ABaseVehicle::ReleaseShield(bool permanently)
+{
+	if (GRIP_POINTER_VALID(Shield) == true)
+	{
+		Shield->DestroyShield();
+		Shield.Reset();
+	}
+}
+
+/**
+* Damage the shield by a given amount.
+***********************************************************************************/
+
+void ABaseVehicle::DamageShield(int32 hitPoints, int32 aggressorVehicleIndex)
+{
+	if (IsShieldActive() == true)
+	{
+		Shield->Impact(hitPoints);
+
+		if (Shield->IsDestroyed() == true)
+		{
+			if (hitPoints >= 10)
+			{
+				ABaseVehicle* vehicle = PlayGameMode->GetVehicleForVehicleIndex(aggressorVehicleIndex);
+
+				if (vehicle != nullptr)
+				{
+					int32 numPoints = 100;
+
+					if (vehicle->AddPoints(numPoints, true, this, GetActorLocation()) == true)
+					{
+						vehicle->ShowStatusMessage(FStatusMessage(PlayGameMode->GetXPMessage(EPickupType::Shield, numPoints)), true, false);
+					}
+				}
+			}
+
+			ReleaseShield(true);
+		}
+		else
+		{
+			if (hitPoints >= 10)
+			{
+				ABaseVehicle* vehicle = PlayGameMode->GetVehicleForVehicleIndex(aggressorVehicleIndex);
+
+				if (vehicle != nullptr)
+				{
+					vehicle->AddPoints(100, true, this, GetActorLocation());
+				}
+
+				AddPoints(100, false, nullptr, GetActorLocation());
+			}
+		}
+	}
+}
+
+/**
+* Destroy the shield.
+***********************************************************************************/
+
+void ABaseVehicle::DestroyShield(int32 aggressorVehicleIndex)
+{
+	if (GRIP_POINTER_VALID(Shield))
+	{
+		ReleaseShield(true);
+
+		ABaseVehicle* vehicle = PlayGameMode->GetVehicleForVehicleIndex(aggressorVehicleIndex);
+
+		int32 numPoints = 100;
+
+		if (vehicle->AddPoints(numPoints, true, this, GetActorLocation()) == true)
+		{
+			vehicle->ShowStatusMessage(FStatusMessage(PlayGameMode->GetXPMessage(EPickupType::Shield, numPoints)), true, false);
+		}
+	}
+}
+
+#pragma endregion PickupShield
+
 #pragma region PickupGun
 
 /**
@@ -1519,6 +1694,18 @@ bool ABaseVehicle::PickupIsCharging(bool ignoreTurbos)
 bool ABaseVehicle::BulletRound(float strength, int32 hitPoints, int32 aggressorVehicleIndex, const FVector& position, const FVector& fromPosition, bool charged, float spinSide)
 {
 	VehicleMesh->IdleUnlock();
+
+#pragma region PickupShield
+
+	if (IsShieldActive() == true &&
+		IsShielded(fromPosition) == true)
+	{
+		DamageShield(hitPoints, aggressorVehicleIndex);
+
+		return false;
+	}
+
+#pragma endregion PickupShield
 
 	float massScale = Physics.CurrentMass / 5000.0f;
 
@@ -1705,6 +1892,40 @@ bool ABaseVehicle::ExplosionForce(float strength, int32 hitPoints, int32 aggress
 	ShakeHUD(1.5f);
 	ShakeCamera(2.5f);
 
+#pragma region PickupShield
+
+	if (destroyShield == true &&
+		GRIP_POINTER_VALID(Shield) == true &&
+		Shield->IsCharged() == false)
+	{
+		DestroyShield(aggressorVehicleIndex);
+	}
+
+	if (IsShieldActive() == true &&
+		IsShielded(location) == true)
+	{
+		Camera->Shock(true);
+
+		DamageShield(hitPoints, aggressorVehicleIndex);
+
+		if (applyForces == true)
+		{
+			FGameEvent thisEvent;
+
+			thisEvent.LaunchVehicleIndex = VehicleIndex;
+			thisEvent.TargetVehicleIndex = aggressorVehicleIndex;
+			thisEvent.PickupUsed = EPickupType::Shield;
+			thisEvent.EventType = EGameEventType::Blocked;
+
+			PlayGameMode->AddGameEvent(thisEvent);
+		}
+
+		return false;
+	}
+	else
+
+#pragma endregion PickupShield
+
 	{
 		Camera->Shock(false, 1.0f);
 
@@ -1835,6 +2056,17 @@ void ABaseVehicle::PeripheralExplosionForce(float strength, int32 hitPoints, int
 
 		ShakeHUD(1.25f);
 		ShakeCamera(1.75f);
+
+#pragma region PickupShield
+
+		if (IsShieldActive() == true &&
+			IsShielded(location) == true)
+		{
+			DamageShield(hitPoints, aggressorVehicleIndex);
+		}
+		else
+
+#pragma endregion PickupShield
 
 		{
 			float massScale = Physics.CurrentMass / 5000.0f;

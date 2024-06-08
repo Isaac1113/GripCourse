@@ -108,6 +108,20 @@ ABaseVehicle::ABaseVehicle()
 
 #pragma endregion PickupMissile
 
+#pragma region PickupShield
+
+	{
+		static ConstructorHelpers::FObjectFinder<UClass> asset(TEXT("'/Game/Pickups/PowerUps/Shield/BP_Level1Shield.BP_Level1Shield_C'"));
+		Level1ShieldBlueprint = (UClass*)asset.Object;
+	}
+
+	{
+		static ConstructorHelpers::FObjectFinder<UClass> asset(TEXT("'/Game/Pickups/PowerUps/Shield/BP_Level2Shield.BP_Level2Shield_C'"));
+		Level2ShieldBlueprint = (UClass*)asset.Object;
+	}
+
+#pragma endregion PickupShield
+
 #pragma region PickupTurbo
 
 	{
@@ -4801,6 +4815,16 @@ void ABaseVehicle::UpdateLightStreaks(float deltaSeconds)
 
 	alphaAmount = FMath::Clamp(alphaAmount, 0.0f, 1.0f);
 	lifeTimeAmount = FMath::Clamp(lifeTimeAmount, 0.0f, 2.5f);
+
+#pragma region PickupShield
+
+	if (ShieldExtensionBlocks == true)
+	{
+		alphaAmount *= 1.0f - ShieldExtension;
+		lifeTimeAmount *= 1.0f - ShieldExtension;
+	}
+
+#pragma endregion PickupShield
 
 	for (ULightStreakComponent* lightStreak : LightStreaks)
 	{

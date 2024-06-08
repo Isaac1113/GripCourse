@@ -117,6 +117,55 @@ public:
 	UPROPERTY(EditAnywhere, Category = Shield)
 		USoundCue* ChargedImpact = nullptr;
 
+#pragma region PickupShield
+
+	// Activate the pickup.
+	virtual void ActivatePickup(ABaseVehicle* launchVehicle, int32 pickupSlot, EPickupActivation activation, bool charged) override;
+
+	// Impact the shield with a given force.
+	void Impact(int32 force)
+	{ HitPoints -= force; if (IsCharged() == true) HitPoints = FMath::Max(1, HitPoints); else HitPoints = FMath::Max(0, HitPoints); }
+
+	// Destroy the shield.
+	void DestroyShield();
+
+	// Is the shield currently active?
+	bool IsActive() const
+	{ return DestroyedAt == 0.0f; }
+
+	// Is the shield destroyed?
+	bool IsDestroyed() const
+	{ return (HitPoints <= 0); }
+
+	// Get the strength of the shield.
+	float GetStrength() const
+	{ return (float)HitPoints / (float)OriginalHitPoints; }
+
+	// Is the shield at full strength?
+	bool IsFull() const
+	{ return HitPoints == OriginalHitPoints; }
+
+protected:
+
+	// Do the regular update tick.
+	virtual void Tick(float deltaSeconds) override;
+
+private:
+
+	// Spawn a new shield effect.
+	UParticleSystemComponent* SpawnShieldEffect(UParticleSystem* from);
+
+	// Timer used for the lifetime of the shield.
+	float Timer = 0.0f;
+
+	// The time the shield was destroyed at.
+	float DestroyedAt = 0.0f;
+
+	// The original number of hit points when the shield is created.
+	int32 OriginalHitPoints = 0;
+
+#pragma endregion PickupShield
+
 	// Looped audio for then the shield is active.
 	UPROPERTY(Transient)
 		UAudioComponent* ActiveAudio = nullptr;

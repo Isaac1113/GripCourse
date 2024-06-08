@@ -2119,12 +2119,52 @@ private:
 public:
 
 	// Is a shield currently active on the vehicle and protecting against a given position?
-	bool IsShielded(const FVector& position) const
-	{ return false; }
+	bool IsShielded(const FVector& position) const;
 
 	// Is a shield currently active on the vehicle?
-	bool IsShieldActive() const
-	{ return false; }
+	bool IsShieldActive() const;
+
+	// Get the current shield if any.
+	AShield* GetShield() const
+	{ return Shield.Get(); }
+
+	// Get the forward shield extension.
+	float GetForwardShieldExtension() const
+	{ return ForwardShieldExtension; }
+
+	// Release any active shield.
+	void ReleaseShield(bool permanently);
+
+	// Remove the grip from a vehicle for a moment.
+	void RemoveGripForAMoment(const FVector& impulse)
+	{ Physics.ApplyImpulse += impulse; }
+
+	// Does the player currently have a shield?
+	bool HasShield() const
+	{ return GRIP_POINTER_VALID(Shield); }
+
+	// Damage the shield by a given amount.
+	void DamageShield(int32 hitPoints, int32 aggressorVehicleIndex);
+
+	// Destroy the shield.
+	void DestroyShield(int32 aggressorVehicleIndex);
+
+private:
+
+	// The shield attached to the vehicle, if any.
+	TWeakObjectPtr<AShield> Shield;
+
+	// The rear shield extension.
+	float ShieldExtension = 0.0f;
+
+	// The forward shield extension.
+	float ForwardShieldExtension = 0.0f;
+
+	// The target value for shield extension between 0 and 1.
+	float ShieldExtensionTarget = 0.0f;
+
+	// Does the shield extension block visual effects?
+	bool ShieldExtensionBlocks = false;
 
 #pragma endregion PickupShield
 

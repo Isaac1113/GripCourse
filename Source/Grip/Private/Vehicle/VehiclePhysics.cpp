@@ -3144,6 +3144,56 @@ bool ABaseVehicle::ModifyContact(uint32 bodyIndex, AActor* other, physx::PxConta
 
 			vehicleCollisionInertia = FMath::Lerp(vehicleCollisionInertia * 2.0f, vehicleCollisionInertia, FMath::Pow(FMath::Abs(dp), 0.5f));
 
+#pragma region PickupShield
+
+			if (IsShieldActive() == true)
+			{
+				FVector velocity = GetVelocity() - otherVehicle->GetVelocity();
+				float force = velocity.Size();
+				float vehicleCollisionMass = 0.25f;
+
+				if (Shield->IsCharged() == true)
+				{
+					if (force > 15.0f * 100.0f)
+					{
+						// If the closing velocity is greater than 15m per second then scrub off the grip
+						// on the other vehicle, while adjusting its velocity by up to 50m per second.
+
+						force = FMath::Max(force, 25.0f * 100.0f);
+
+						if (force > 50.0f * 100.0f)
+						{
+							velocity.Normalize();
+							velocity *= 50.0f * 100.0f;
+						}
+
+						otherVehicle->RemoveGripForAMoment(velocity * otherVehicle->GetPhysics().CurrentMass);
+					}
+
+					vehicleCollisionMass *= 0.1f;
+					vehicleCollisionInertia *= 0.5f;
+				}
+				else
+				{
+					vehicleCollisionMass *= 0.5f;
+					vehicleCollisionInertia *= 0.5f;
+				}
+
+				// Act like this vehicle has a lot more weight than it really does in response
+				// to the collision if the shield is active.
+
+				if (bodyIndex == 0)
+				{
+					contacts.setInvMassScale0(vehicleCollisionMass);
+				}
+				else if (bodyIndex == 1)
+				{
+					contacts.setInvMassScale1(vehicleCollisionMass);
+				}
+			}
+
+#pragma endregion PickupShield
+
 #pragma region VehicleAntiGravity
 
 			// By default, antigravity vehicles are more prone to rotational collision response

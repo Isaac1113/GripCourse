@@ -312,6 +312,43 @@ void AGatlingGun::Tick(float deltaSeconds)
 									surface = EGameSurface::Vehicle;
 								}
 
+#pragma region PickupShield
+
+								else
+								{
+									// We can assume here that we struck the vehicle's shield.
+
+									surface = EGameSurface::Shield;
+									hitComponent = vehicle->VehicleMesh;
+
+									float standardOffset = -300.0f;
+									FVector additionalOffset = vehicle->VehicleShield->RearOffset;
+
+									if (vehicleTransform.InverseTransformPosition(impactPoint).X > 0.0f)
+									{
+										standardOffset *= -1.0f;
+										additionalOffset = vehicle->VehicleShield->FrontOffset;
+									}
+
+									if (vehicle->VehicleShield->HitEffect != nullptr)
+									{
+										hitParticleSystems.Emplace(vehicle->VehicleShield->HitEffect);
+										hitLocations.Emplace(additionalOffset);
+									}
+
+									if (vehicle->VehicleShield->HitPointEffect != nullptr)
+									{
+										FVector pointOffset = FVector(standardOffset, FMath::FRandRange(-150.0f, 150.0f), FMath::FRandRange(-50.0f, 50.0f));
+
+										hitParticleSystems.Emplace(vehicle->VehicleShield->HitPointEffect);
+										hitLocations.Emplace(additionalOffset + pointOffset);
+									}
+
+									hitSound = vehicle->VehicleShield->HitSound;
+								}
+
+#pragma endregion PickupShield
+
 								// Calculate a reflection vector between the incoming round and the vehicle it's
 								// hit to determine how to orient any visual hit effects.
 
