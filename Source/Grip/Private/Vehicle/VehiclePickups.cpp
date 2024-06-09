@@ -2445,3 +2445,60 @@ float ABaseVehicle::GetSustainedAngularPitch()
 }
 
 #pragma endregion PickupMissile
+
+#pragma region BotCombatTraining
+
+/**
+* Get a weighting, between 0 and 1, of how ideally a pickup can be used. 0 means
+* cannot be used effectively at all, 1 means a very high chance of pickup efficacy.
+***********************************************************************************/
+
+float ABaseVehicle::GetPickupEfficacyWeighting(int32 pickupSlot, AActor*& target)
+{
+	float result = 0.0f;
+
+	target = nullptr;
+
+	switch (PickupSlots[pickupSlot].Type)
+	{
+
+#pragma region PickupShield
+
+	case EPickupType::Shield:
+		result = AShield::EfficacyWeighting(this);
+		break;
+
+#pragma endregion PickupShield
+
+#pragma region PickupTurbo
+
+	case EPickupType::TurboBoost:
+		result = ATurbo::EfficacyWeighting(this);
+		break;
+
+#pragma endregion PickupTurbo
+
+#pragma region PickupMissile
+
+	case EPickupType::HomingMissile:
+		result = AHomingMissile::EfficacyWeighting(this, &PickupSlots[pickupSlot], Cast<ABaseVehicle>(HUD.GetCurrentMissileTargetActor(pickupSlot)));
+		break;
+
+#pragma endregion PickupMissile
+
+#pragma region PickupGun
+
+	case EPickupType::GatlingGun:
+		result = AGatlingGun::EfficacyWeighting(this, &PickupSlots[pickupSlot], nullptr, target, Level1GatlingGunBlueprint->GetDefaultObject<AGatlingGun>());
+		break;
+
+#pragma endregion PickupGun
+
+	default:
+		break;
+	}
+
+	return result;
+}
+
+#pragma endregion BotCombatTraining

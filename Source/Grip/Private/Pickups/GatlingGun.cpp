@@ -559,4 +559,49 @@ bool AGatlingGun::GetCollision(UWorld* world, const FVector& start, const FVecto
 	return false;
 }
 
+#pragma region BotCombatTraining
+
+/**
+* Get a weighting, between 0 and 1, of how ideally a pickup can be used, optionally
+* against a particular vehicle. 0 means cannot be used effectively at all, 1 means a
+* very high chance of pickup efficacy.
+***********************************************************************************/
+
+float AGatlingGun::EfficacyWeighting(ABaseVehicle* launchVehicle, FPlayerPickupSlot* launchPickup, ABaseVehicle* againstVehicle, AActor*& targetSelected, AGatlingGun* gun)
+{
+	targetSelected = nullptr;
+
+	if (launchVehicle->IsGrounded() == true)
+	{
+		float weight = 0.0f;
+
+		targetSelected = SelectTarget(launchVehicle, launchPickup, gun->AutoAiming, weight, true);
+
+		if (targetSelected != nullptr)
+		{
+			FHitResult hitResult;
+			FCollisionQueryParams queryParams(TEXT("GunVisibilityTest"), true);
+
+			queryParams.AddIgnoredActor(launchVehicle);
+			queryParams.AddIgnoredActor(targetSelected);
+
+			FVector position = launchVehicle->GetCenterLocation();
+			ABaseVehicle* vehicle = Cast<ABaseVehicle>(targetSelected);
+			FVector offset = (vehicle != nullptr) ? vehicle->GetSurfaceDirection() * -100.0f : FVector(0.0f, 0.0f, -100.0f);
+			FVector targetPosition = ((vehicle != nullptr) ? vehicle->GetCenterLocation() : targetSelected->GetActorLocation()) + offset;
+
+			if (launchVehicle->GetWorld()->LineTraceSingleByChannel(hitResult, position + launchVehicle->GetSurfaceDirection() * -100.0f, targetPosition, ABaseGameMode::ECC_LineOfSightTest, queryParams) == true)
+			{
+				weight = 0.0f;
+			}
+		}
+
+		return (targetSelected != nullptr && (targetSelected == againstVehicle || againstVehicle == nullptr)) ? ((weight >= 0.5f) ? 1.0f : weight) : 0.0f;
+	}
+
+	return 0.0f;
+}
+
+#pragma endregion BotCombatTraining
+
 #pragma endregion PickupGun

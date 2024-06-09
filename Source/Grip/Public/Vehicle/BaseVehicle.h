@@ -2168,6 +2168,24 @@ private:
 
 #pragma endregion PickupShield
 
+#pragma region BotCombatTraining
+
+public:
+
+	// Should the bot raise its shield?
+	bool AIShouldRaiseShield();
+
+private:
+
+	// Handle pickups use.
+	void AIUpdatePickups(float deltaSeconds);
+
+	// Get a weighting, between 0 and 1, of how ideally a pickup can be used.
+	// 0 means cannot be used effectively at all, 1 means a very high chance of pickup efficacy.
+	float GetPickupEfficacyWeighting(int32 pickupSlot, AActor*& target);
+
+#pragma endregion BotCombatTraining
+
 #pragma region VehicleSpringArm
 
 public:

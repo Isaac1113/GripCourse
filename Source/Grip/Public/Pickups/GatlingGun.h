@@ -180,6 +180,14 @@ public:
 	// Select a target for the gun.
 	static AActor* SelectTarget(AActor* launchPlatform, FPlayerPickupSlot* launchPickup, float autoAiming, float& weight, bool speculative);
 
+#pragma region BotCombatTraining
+
+	// Get a weighting, between 0 and 1, of how ideally a pickup can be used, optionally against a particular vehicle.
+	// 0 means cannot be used effectively at all, 1 means a very high chance of pickup efficacy.
+	static float EfficacyWeighting(ABaseVehicle* launchVehicle, FPlayerPickupSlot* launchPickup, ABaseVehicle* againstVehicle, AActor*& targetSelected, AGatlingGun* gun);
+
+#pragma endregion BotCombatTraining
+
 	// The target actor that the gun is aiming for right now.
 	TWeakObjectPtr<AActor> Target;
 

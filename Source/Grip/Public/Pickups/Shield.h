@@ -145,6 +145,14 @@ public:
 	bool IsFull() const
 	{ return HitPoints == OriginalHitPoints; }
 
+#pragma region BotCombatTraining
+
+	// Get a weighting, between 0 and 1, of how ideally a pickup can be used, optionally against a particular vehicle.
+	// 0 means cannot be used effectively at all, 1 means a very high chance of pickup efficacy.
+	static float EfficacyWeighting(ABaseVehicle* launchVehicle);
+
+#pragma endregion BotCombatTraining
+
 protected:
 
 	// Do the regular update tick.

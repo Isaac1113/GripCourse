@@ -28,6 +28,12 @@ void ADebugPickupsHUD::DrawSlot(int32 slotIndex, FPlayerPickupSlot& slot, ABaseV
 	AddFloat(TEXT("UseBefore"), slot.UseBefore);
 	AddFloat(TEXT("DumpAfter"), slot.DumpAfter);
 
+#pragma region BotCombatTraining
+
+	AddFloat(TEXT("Weight"), vehicle->GetPickupEfficacyWeighting(slotIndex, target));
+
+#pragma endregion BotCombatTraining
+
 	float efficacyTime = APickup::GetEfficacyDelayBeforeUse(slot.Type, vehicle);
 
 	AddFloat(TEXT("Efficacy"), (efficacyTime > 0.0f) ? slot.EfficacyTimer / efficacyTime : 1.0f);
@@ -71,6 +77,15 @@ void ADebugPickupsHUD::DrawSlot(int32 slotIndex, FPlayerPickupSlot& slot, ABaseV
 			}
 
 #pragma endregion PickupGun
+
+			if (slot.Type == EPickupType::HomingMissile)
+			{
+				thisWeight = FMathEx::TargetWeight(fromPosition, fromDirection, targetPosition, 50.0f * 100.0f, 750.0f * 100.0f, 0.75f, true);
+
+				AddFloat(TEXT("TargetWeight"), 1.0f - thisWeight);
+
+				AddBool(TEXT("Good Launch Condition"), AHomingMissile::GoodLaunchCondition(vehicle));
+			}
 
 			AddFloat(TEXT("ScaleOffensive"), gameMode->ScaleOffensivePickupWeight(vehicle->HasAIDriver(), thisWeight, &slot, aggressionRatio));
 		}

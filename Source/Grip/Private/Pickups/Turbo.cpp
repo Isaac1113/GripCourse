@@ -157,4 +157,43 @@ void ATurbo::Tick(float deltaSeconds)
 	}
 }
 
+#pragma region BotCombatTraining
+
+/**
+* Get a weighting, between 0 and 1, of how ideally a pickup can be used, optionally
+* against a particular vehicle. 0 means cannot be used effectively at all, 1 means a
+* very high chance of pickup efficacy.
+***********************************************************************************/
+
+float ATurbo::EfficacyWeighting(ABaseVehicle* launchVehicle)
+{
+	if (launchVehicle->IsDrifting() == false &&
+		launchVehicle->IsGrounded(2.0f) == true &&
+		launchVehicle->GetSpeedKPH() > 100.0f &&
+		launchVehicle->GetAI().IsDrivingCasually() == true &&
+		launchVehicle->GetAI().IsGoodForHighSpeed() == true)
+	{
+		if (FMath::Abs(launchVehicle->GetVehicleControl().SteeringPosition) < GRIP_STEERING_PURPOSEFUL)
+		{
+			if (launchVehicle->GetAI().RouteFollower.IsValid() == true)
+			{
+				float speedScale = 1.5f;
+				float curvatureTimeAhead = 1.5f;
+
+				if (WithinCurvatureAhead(curvatureTimeAhead, speedScale, launchVehicle, 10.0f) == true)
+				{
+					float speedTimeAhead = 3.0f;
+					float result = FMathEx::GetRatio(GetSpeedAhead(speedTimeAhead, speedScale, launchVehicle), 500.0f, 700.0f);
+
+					return result;
+				}
+			}
+		}
+	}
+
+	return 0.0f;
+}
+
+#pragma endregion BotCombatTraining
+
 #pragma endregion PickupTurbo

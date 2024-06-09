@@ -478,6 +478,18 @@ void ABaseVehicle::UpdateAI(float deltaSeconds)
 
 			AICalculateControlInputs(transform, location, direction, movementPerSecond, deltaSeconds);
 		}
+
+#pragma region BotCombatTraining
+
+		if (PlayGameMode->PastGameSequenceStart() == true)
+		{
+			// Now handle the use of pickups.
+
+			AIUpdatePickups(deltaSeconds);
+		}
+
+#pragma endregion BotCombatTraining
+
 	}
 
 	if (gameStartedForThisVehicle == true)
@@ -2668,3 +2680,218 @@ void FVehicleAI::TeleportReset(const FVector& location)
 }
 
 #pragma endregion VehicleTeleport
+
+#pragma region BotCombatTraining
+
+/**
+* Handle pickups use.
+***********************************************************************************/
+
+void ABaseVehicle::AIUpdatePickups(float deltaSeconds)
+{
+	// Determine the minimum efficacy required, with easy difficulty being less efficacious
+	// than high difficulty, because we high difficulty we only want bots to use their
+	// pickups when there's a high chances of them being effective.
+
+	float minEfficacy = 0.0f;
+	int32 difficulty = GameState->GetDifficultyLevel();
+
+	switch (difficulty)
+	{
+	default:
+		minEfficacy = 0.01f;
+		break;
+	case 1:
+		minEfficacy = 0.16f;
+		break;
+	case 2:
+		minEfficacy = 0.33f;
+		break;
+	case 3:
+		minEfficacy = 0.33f;
+		break;
+	}
+
+	// Manage the attack timers and indicators used in raising the shield.
+
+	IncomingMissile = false;
+
+	bool incomingMissileClose = false;
+	bool incomingBulletRound = BulletHitTimer > 0.0f;
+
+	BulletHitTimer = FMath::Max(BulletHitTimer - deltaSeconds, 0.0f);
+
+	if (HasPickup(EPickupType::Shield, false) == true)
+	{
+		GRIP_GAME_MODE_LIST_FOR_FROM(Missiles, missiles, PlayGameMode);
+
+		for (AHomingMissile* missile : missiles)
+		{
+			if (missile->IsTargeting(this) == true &&
+				missile->IsLikelyToHitTarget() == true)
+			{
+				IncomingMissile = true;
+
+				incomingMissileClose |= (missile->GetTimeToTarget() < 2.5f);
+			}
+		}
+	}
+
+	// Now update each of the pickup slots for bot use.
+
+	int32 maxSlot = 0;
+	bool useNow = false;
+	float maxEfficacy = 0.0f;
+
+	for (int32 i = 0; i < NumPickups; i++)
+	{
+		FPlayerPickupSlot& pickup = PickupSlots[i];
+
+		if (pickup.State == EPickupSlotState::Idle &&
+			pickup.IsCharging(false) == false)
+		{
+			FPlayerPickupSlot& otherPickup = PickupSlots[i ^ 1];
+
+			if (pickup.BotWillCharge == true &&
+				pickup.IsCharged() == false &&
+				otherPickup.State == EPickupSlotState::Idle)
+			{
+				// Handle the charging of a pickup slot.
+
+				if (otherPickup.IsCharged() == true ||
+					otherPickup.IsCharging(false) == true)
+				{
+					pickup.BotWillCharge = false;
+				}
+				else if ((pickup.Timer > 20.0f) ||
+					(pickup.Timer > 10.0f && GetSpeedKPH() > 300.0f) ||
+					(AI.OptimumSpeed > 0.0f && AI.OptimumSpeed < 450.0f && GetSpeedKPH() > 400.0f) ||
+					(AI.OptimumSpeed > 0.0f && AI.OptimumSpeed < GetSpeedKPH() - 50.0f))
+				{
+					// We try to only charge pickups when we have speed to spare as charging
+					// slow the vehicle down, but we don't wait too long for that before just
+					// charging it anyway.
+
+					// So everything is good for charging the pickup so kick that off now.
+
+					BeginUsePickup(i, true);
+				}
+			}
+			else if (pickup.UseAfter < pickup.Timer)
+			{
+				// If we're now allowed to use the pickup slot, then see if it's efficacious to do so.
+
+				float efficaciousTimeIncrement = (pickup.EfficacyTimer > 0.0f) ? 0.1f : 0.25f;
+
+				if ((pickup.EfficacyTimer <= 0.0f && Clock0p25.ShouldTickNow() == true) ||
+					(pickup.EfficacyTimer > 0.0f && Clock0p1.ShouldTickNow() == true))
+				{
+					AActor* target = nullptr;
+					float efficacy = GetPickupEfficacyWeighting(i, target);
+
+					// Detect the case where we want to use a pickup because it has a dump-after time.
+
+					useNow = (pickup.DumpAfter != 0.0f && pickup.Timer >= pickup.DumpAfter && pickup.EfficacyTimer == 0.0f && efficacy >= 0.0f);
+
+					if (useNow == true)
+					{
+						maxSlot = i;
+						break;
+					}
+
+					if (efficacy < minEfficacy)
+					{
+						// Not effective enough right now, so reset the efficacy timer.
+
+						pickup.EfficacyTimer = 0.0f;
+					}
+					else
+					{
+						// This timer will be inaccurate but accurate enough for our purposes.
+
+						if (pickup.EfficacyTimer == 0.0f)
+						{
+							pickup.EfficacyTimer += deltaSeconds;
+						}
+						else
+						{
+							pickup.EfficacyTimer += efficaciousTimeIncrement;
+						}
+
+						if (maxEfficacy < efficacy)
+						{
+							// The efficacy meets our minimum requirements so indicate to use it.
+
+							maxSlot = i;
+							maxEfficacy = efficacy;
+
+							if (pickup.Type == EPickupType::Shield)
+							{
+								// Exceptions for the shield.
+
+								// We only want to raise it at the last moment maybe after having detected an
+								// incoming missile several seconds before now, so we delay it until it's really
+								// needed, but using the efficacy timer to enforce the defense responsiveness
+								// delay. If we need it now and the delay has passed then break out of the loop
+								// because we really want this shield to be used and not potentially the other
+								// pickup in the other slot.
+
+								float efficacyTime = APickup::GetEfficacyDelayBeforeUse(pickup.Type, this);
+
+								if (incomingBulletRound == false &&
+									incomingMissileClose == false)
+								{
+									pickup.EfficacyTimer = FMath::Min(pickup.EfficacyTimer, efficacyTime - deltaSeconds);
+								}
+								else
+								{
+									if (pickup.EfficacyTimer >= efficacyTime)
+									{
+										break;
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Use a pickup if the time is right.
+
+	if ((useNow == true) ||
+		(maxEfficacy >= minEfficacy && PickupSlots[maxSlot].EfficacyTimer >= APickup::GetEfficacyDelayBeforeUse(PickupSlots[maxSlot].Type, this)))
+	{
+		// Don't use pickup slots together, leave at least a two second gap between them.
+		// Unless it's a shield, in which case raise it now as it's likely needed immediately.
+
+		if ((VehicleClock - AI.LastUsedPickupTime) > 2.0f ||
+			(PickupSlots[maxSlot].Type == EPickupType::Shield))
+		{
+			// Press and release again to use the pickup.
+
+			UsePickup(maxSlot, EPickupActivation::Pressed, true);
+			UsePickup(maxSlot, EPickupActivation::Released, true);
+
+			AI.LastUsedPickupTime = VehicleClock;
+		}
+	}
+}
+
+/**
+* Should the bot raise its shield?
+***********************************************************************************/
+
+bool ABaseVehicle::AIShouldRaiseShield()
+{
+	if (GRIP_POINTER_VALID(Shield) == false &&
+		HasPickup(EPickupType::Shield, false) == true)
+	{
+		return (BulletHitTimer > 0.0f || IncomingMissile == true);
+	}
+
+	return false;
+}
+
+#pragma endregion BotCombatTraining

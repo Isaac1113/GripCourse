@@ -259,6 +259,17 @@ public:
 	// Get the target location for a particular target.
 	static FVector GetTargetLocationFor(AActor* target, const FVector& targetOffset);
 
+#pragma region BotCombatTraining
+
+	// Is this launch vehicle in a good condition to launch a missile?
+	static bool GoodLaunchCondition(ABaseVehicle* launchVehicle);
+
+	// Get a weighting, between 0 and 1, of how ideally a pickup can be used, optionally against a particular vehicle.
+	// 0 means cannot be used effectively at all, 1 means a very high chance of pickup efficacy.
+	static float EfficacyWeighting(ABaseVehicle* launchVehicle, FPlayerPickupSlot* launchPickup, ABaseVehicle* againstVehicle = nullptr);
+
+#pragma endregion BotCombatTraining
+
 	// Offset the targeting of the missile to cause a deliberate miss.
 	FVector HomingTargetOffset = FVector::ZeroVector;
 

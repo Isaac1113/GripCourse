@@ -1327,4 +1327,123 @@ bool AHomingMissile::IsLikelyToHitTarget() const
 	return InRangeOfTarget == true || MissileMovement->IsLikelyToHitTarget() == true;
 }
 
+#pragma region BotCombatTraining
+
+/**
+* Is this launch vehicle in a good condition to launch a missile?
+***********************************************************************************/
+
+bool AHomingMissile::GoodLaunchCondition(ABaseVehicle* launchVehicle)
+{
+	if (launchVehicle->IsPracticallyGrounded() == false ||
+		launchVehicle->GroundedTime(2.0f) < 0.8f ||
+		launchVehicle->GetAI().IsDrivingCasually(true) == false)
+	{
+		return false;
+	}
+
+	UGlobalGameState* gameState = UGlobalGameState::GetGlobalGameState(launchVehicle);
+
+	if (gameState->IsGameModeRace() == true)
+	{
+		UPursuitSplineComponent* spline = launchVehicle->GetAI().RouteFollower.ThisSpline.Get();
+
+		if (spline != nullptr)
+		{
+			FVector vehicleDirection = launchVehicle->GetFacingDirection();
+			FVector splineDirection = spline->GetDirectionAtDistanceAlongSpline(launchVehicle->GetAI().RouteFollower.ThisDistance, ESplineCoordinateSpace::World);
+
+			// Don't launch unless the vehicle is pointing in the right direction.
+
+			if (FVector::DotProduct(splineDirection, vehicleDirection) > 0.95f)
+			{
+				FVector angularVelocity = launchVehicle->GetAngularVelocity();
+				float yawRate = FMath::Abs(angularVelocity.Z);
+				float rollRate = FMath::Abs(angularVelocity.X);
+				float pitchRate = FMath::Abs(angularVelocity.Y);
+
+				// Don't launch if the vehicle is tumbling around.
+
+				if (rollRate < 30.0f &&
+					yawRate < 30.0f &&
+					pitchRate < 30.0f)
+				{
+					float timeAhead = 2.0f;
+					FRotator rotation = launchVehicle->GetActorRotation();
+					FQuat quaternion = rotation.Quaternion();
+					int32 direction = launchVehicle->GetPursuitSplineDirection();
+					float distanceAhead = timeAhead * FMathEx::KilometersPerHourToCentimetersPerSecond(launchVehicle->GetSpeedKPH() + 200.0f);
+					FRotator splineDegrees = launchVehicle->GetAI().RouteFollower.GetCurvatureOverDistance(launchVehicle->GetAI().RouteFollower.ThisDistance, distanceAhead, direction, quaternion, true);
+					float tunnelDiameter = launchVehicle->GetAI().RouteFollower.GetTunnelDiameterOverDistance(launchVehicle->GetAI().RouteFollower.ThisDistance, FMath::Max(launchVehicle->GetSpeedMPS() * timeAhead, 10.0f) * 100.0f, direction, false);
+
+					if (tunnelDiameter > 50.0f * 100.0f)
+					{
+						// Convert to degrees per second.
+
+						splineDegrees *= 1.0f / timeAhead;
+
+						// Don't launch if the immediate route is too twisty.
+
+						if (FMath::Abs(splineDegrees.Yaw) < 15.0f &&
+							FMath::Abs(splineDegrees.Pitch) < 15.0f &&
+							FMath::Abs(splineDegrees.Roll) < 15.0f)
+						{
+							FVector location = launchVehicle->GetActorLocation();
+							FVector up = launchVehicle->GetAI().RouteFollower.ThisSpline->WorldSpaceToSplineSpace(launchVehicle->GetLaunchDirection(), launchVehicle->GetAI().RouteFollower.ThisDistance, false);
+							float overDistance = distanceAhead;
+							float clearanceUp = launchVehicle->GetAI().RouteFollower.GetClearanceOverDistance(launchVehicle->GetAI().RouteFollower.ThisDistance, overDistance, direction, location, up, 45.0f);
+
+							// Don't launch if less than 12 meters height clearance over the vehicle.
+
+							if (clearanceUp > 12.0f * 100.0f)
+							{
+								return true;
+							}
+						}
+					}
+				}
+			}
+
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/**
+* Get a weighting, between 0 and 1, of how ideally a pickup can be used, optionally
+* against a particular vehicle. 0 means cannot be used effectively at all, 1 means a
+* very high chance of pickup efficacy.
+***********************************************************************************/
+
+float AHomingMissile::EfficacyWeighting(ABaseVehicle* launchVehicle, FPlayerPickupSlot* launchPickup, ABaseVehicle* againstVehicle)
+{
+	if (GoodLaunchCondition(launchVehicle) == true)
+	{
+		float weight = 0.0f;
+		AActor* target = againstVehicle;
+		TArray<TWeakObjectPtr<AActor>> targetList;
+
+		if (SelectTarget(launchVehicle, launchPickup, target, targetList, weight, 1, true) == true)
+		{
+			if (launchPickup != nullptr &&
+				launchPickup->IsCharged() == true)
+			{
+				float maxWeight = (targetList.Num() < 2) ? 0.5f : 1.0f;
+
+				return ((target == againstVehicle || againstVehicle == nullptr)) ? ((weight >= 0.5f) ? maxWeight : weight) : 0.0f;
+			}
+			else
+			{
+				return ((target == againstVehicle || againstVehicle == nullptr)) ? ((weight >= 0.5f) ? 1.0f : weight) : 0.0f;
+			}
+		}
+	}
+
+	return 0.0f;
+}
+
+#pragma endregion BotCombatTraining
+
 #pragma endregion PickupMissile

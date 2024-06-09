@@ -213,4 +213,19 @@ UParticleSystemComponent* AShield::SpawnShieldEffect(UParticleSystem* from)
 	return nullptr;
 }
 
+#pragma region BotCombatTraining
+
+/**
+* Get a weighting, between 0 and 1, of how ideally a pickup can be used, optionally
+* against a particular vehicle. 0 means cannot be used effectively at all, 1 means a
+* very high chance of pickup efficacy.
+***********************************************************************************/
+
+float AShield::EfficacyWeighting(ABaseVehicle* launchVehicle)
+{
+	return (launchVehicle->AIShouldRaiseShield() == true) ? 1.0f : 0.0f;
+}
+
+#pragma endregion BotCombatTraining
+
 #pragma endregion PickupShield
