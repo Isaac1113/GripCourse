@@ -1513,6 +1513,19 @@ private:
 
 #pragma endregion VehicleLaunch
 
+#pragma region VehicleLaunchControl
+
+private:
+
+	// Update the launch control state for getting a boost off the start line.
+	void UpdateLaunchControl();
+
+	// Has the vehicle used launch control to boost off the start line?
+	bool UsedLaunchControl() const
+	{ return (Control.LaunchControl == 2 || Control.LaunchControl == 4); }
+
+#pragma endregion VehicleLaunchControl
+
 #pragma region VehicleDrifting
 
 private:

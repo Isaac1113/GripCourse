@@ -828,6 +828,12 @@ void ABaseVehicle::Tick(float deltaSeconds)
 
 #pragma endregion VehicleSpringArm
 
+#pragma region VehicleLaunchControl
+
+	UpdateLaunchControl();
+
+#pragma endregion VehicleLaunchControl
+
 	RaceState.Tick(deltaSeconds, PlayGameMode, GameState);
 
 	// If we're now finished playing as a result of that Tick, then hand
@@ -1963,6 +1969,19 @@ void ABaseVehicle::UpdatePowerAndGearing(float deltaSeconds, const FVector& xdir
 		// Calculate the launch boost to boost the overall engine power.
 
 		float launchBoostPower = 1.0f;
+
+#pragma region VehicleLaunchControl
+
+		float maxLaunchBoostTime = 2.0f;
+		float maxLaunchBoostPower = 1.0f;
+
+		if ((RaceState.RaceTime < maxLaunchBoostTime) &&
+			(UsedLaunchControl() == true))
+		{
+			launchBoostPower += (1.0f - FMath::Pow(RaceState.RaceTime / maxLaunchBoostTime, 2.0f)) * maxLaunchBoostPower;
+		}
+
+#pragma endregion VehicleLaunchControl
 
 		// In low gears, the more away from the flat, the more power we give.
 		// The reason being, it's hard to accelerate up a steep hill in low gear.
@@ -5428,6 +5447,87 @@ void ABaseVehicle::UnhookPlayerHUD()
 }
 
 #pragma endregion VehicleHUD
+
+#pragma region VehicleLaunchControl
+
+/**
+* Update the launch control state for getting a boost off the start line.
+***********************************************************************************/
+
+void ABaseVehicle::UpdateLaunchControl()
+{
+	if (AI.BotDriver == false)
+	{
+		if (PlayGameMode->GetPreStartTime() < 1.0f &&
+			PlayGameMode->GetPreStartTime() > 0.1f &&
+			Control.ThrottleInput > 0.25f)
+		{
+			// Hit the throttle too early.
+
+			Control.LaunchControl |= 1;
+		}
+
+		if (PlayGameMode->GetPreStartTime() < 0.1f &&
+			RaceState.RaceTime < 0.1f &&
+			Control.ThrottleInput > 0.25f)
+		{
+			// Hit the throttle in the launch control window.
+
+			Control.LaunchControl |= 2;
+		}
+	}
+	else
+	{
+		if (PlayGameMode->PastGameSequenceStart() == false)
+		{
+			if (Control.LaunchControl == 0)
+			{
+				int32 level = GameState->GetDifficultyLevel();
+				int32 random = FMath::Rand() % PlayGameMode->GetNumOpponents();
+
+				if (level == 0 || random < PlayGameMode->GetNumOpponents() / (1 << level))
+				{
+					// No launch control.
+
+					Control.LaunchControl = 1;
+				}
+				else
+				{
+					// Launch control.
+
+					Control.LaunchControl = 2;
+				}
+			}
+		}
+	}
+
+	if (UsedLaunchControl() == true &&
+		HUD.LaunchControlShown == false &&
+		PlayGameMode->PastGameSequenceStart() == true)
+	{
+		HUD.LaunchControlShown = true;
+
+		GearUpEngaged();
+
+		if (HUDWidget != nullptr)
+		{
+			HUDWidget->ShowLaunchControl(Control.LaunchControl);
+		}
+
+#pragma region VehicleAudio
+
+		FVehicleAudioGear& gearAudio = VehicleAudio->Gears[0];
+
+		GearShiftAudio->SetSound(gearAudio.ChangeUpSound);
+		GearShiftAudio->SetVolumeMultiplier(GlobalVolume);
+		GearShiftAudio->Play();
+
+#pragma endregion VehicleAudio
+
+	}
+}
+
+#pragma endregion VehicleLaunchControl
 
 #pragma region ClocksAndTime
 
