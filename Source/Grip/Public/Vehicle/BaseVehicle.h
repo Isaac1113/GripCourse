@@ -1865,6 +1865,34 @@ private:
 
 #pragma endregion AIAttraction
 
+#pragma region VehicleCatchup
+
+public:
+
+	// Are we using leading catchup to control this vehicle?
+	bool GetUsingLeadingCatchup() const
+	{ return UsingLeadingCatchup; }
+
+	// Are we using trailing catchup to control this vehicle?
+	bool GetUsingTrailingCatchup() const
+	{ return UsingTrailingCatchup; }
+
+private:
+
+	// Update the catchup assistance state of the vehicle.
+	void UpdateCatchup();
+
+	// Are we using leading catchup to control this vehicle?
+	bool UsingLeadingCatchup = false;
+
+	// Are we using trailing catchup to control this vehicle?
+	bool UsingTrailingCatchup = false;
+
+	// The characteristics used to control vehicle catchup assistance.
+	FVehicleCatchupCharacteristics CatchupCharacteristics;
+
+#pragma endregion VehicleCatchup
+
 #pragma region SpeedPads
 
 public:
@@ -2283,6 +2311,34 @@ public:
 
 #pragma endregion VehicleCamera
 
+#pragma region CameraCinematics
+
+public:
+
+	// Start cinematically watching the vehicle on this spline, so stay on it if possible.
+	void StartWatchingOnSpline()
+	{ NumSplineWatchers++; }
+
+	// Stop cinematically watching the vehicle on this spline.
+	void StopWatchingOnSpline()
+	{ NumSplineWatchers--; }
+
+	// Is the vehicle driving in alignment with its current pursuit spline and within its bounds?
+	bool IsDrivingStraightAndNarrow() const;
+
+	// Get the camera ball for use with this vehicle.
+	ACameraBallActor* GetCameraBall();
+
+private:
+
+	// The camera ball for blowing up the vehicle
+	TWeakObjectPtr<ACameraBallActor> CameraBallActor;
+
+	// Index for the current point camera when cycling through them authoring views.
+	int32 CameraPointIndex = 0;
+
+#pragma endregion CameraCinematics
+
 #pragma region VehicleHUD
 
 public:
@@ -2502,7 +2558,9 @@ public:
 	// Kick off the cinematic camera.
 	UFUNCTION(BlueprintCallable, Category = Advanced)
 		void KickTheCinematics()
-	{ }
+	{
+		Camera->GetCinematicsDirector().AttachToAnyVehicle(this);
+	}
 
 	// Is an AI driver good for a launch?
 	UFUNCTION(BlueprintCallable, Category = Advanced)
@@ -2649,7 +2707,7 @@ public:
 
 	// Is cinematic camera currently active?
 	bool IsCinematicCameraActive(bool orGameEnded = true) const
-	{ return false; }
+	{ return (Camera->GetCinematicsDirector().IsActive() == true || (orGameEnded == true && RaceState.PlayerCompletionState >= EPlayerCompletionState::Complete)); }
 
 	// Get the position within the current gear that the emulated piston engine is at, between 0 and 1.
 	float GearPosition() const

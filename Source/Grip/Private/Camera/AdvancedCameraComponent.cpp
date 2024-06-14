@@ -375,6 +375,114 @@ void UAdvancedCameraComponent::TickComponent(float deltaSeconds, enum ELevelTick
 		return;
 	}
 
+#pragma region CameraCinematics
+
+	CinematicsDirector.Tick(deltaSeconds);
+
+	if (APlayGameMode::Get(this) != nullptr)
+	{
+		if (CinematicsDirector.UsingCameraPointCamera(false) == true)
+		{
+			// If we've a camera point on a vehicle then render it with some
+			// appropriate depth-of-field.
+
+			PostProcessSettings.bOverride_DepthOfFieldFocalDistance = true;
+			PostProcessSettings.DepthOfFieldFocalDistance = 250.0f;
+			PostProcessSettings.bOverride_DepthOfFieldDepthBlurRadius = true;
+			PostProcessSettings.DepthOfFieldDepthBlurRadius = 2.0f;
+			PostProcessSettings.bOverride_DepthOfFieldDepthBlurAmount = true;
+			PostProcessSettings.DepthOfFieldDepthBlurAmount = 0.5f;
+		}
+		else if (CinematicsDirector.UsingSplineCamera() == true)
+		{
+			// If we're using a spline camera to view a target then render it with some
+			// appropriate depth-of-field.
+
+			PostProcessSettings.bOverride_DepthOfFieldFocalDistance = true;
+			PostProcessSettings.DepthOfFieldFocalDistance = CinematicsDirector.GetFocalDistance();
+			PostProcessSettings.bOverride_DepthOfFieldDepthBlurRadius = true;
+			PostProcessSettings.DepthOfFieldDepthBlurRadius = 1.0f;
+			PostProcessSettings.bOverride_DepthOfFieldDepthBlurAmount = true;
+			PostProcessSettings.DepthOfFieldDepthBlurAmount = 1.0f;
+		}
+		else
+		{
+			// Kill all depth-of-field.
+
+			PostProcessSettings.bOverride_DepthOfFieldFocalDistance = true;
+			PostProcessSettings.DepthOfFieldFocalDistance = 0.0f;
+			PostProcessSettings.bOverride_DepthOfFieldDepthBlurRadius = true;
+			PostProcessSettings.DepthOfFieldDepthBlurRadius = 0.0f;
+			PostProcessSettings.bOverride_DepthOfFieldDepthBlurAmount = true;
+			PostProcessSettings.DepthOfFieldDepthBlurAmount = 0.0f;
+		}
+
+		// Setup the motion blur for the scene.
+
+		float scale = 0.25f;
+
+		switch (gameState->GraphicsOptions.MotionBlur)
+		{
+		default:
+			scale = 0.0f;
+			break;
+		case EQualityLevel::Low:
+			scale = 0.125f;
+			break;
+		case EQualityLevel::Medium:
+			scale = 0.25f;
+			break;
+		case EQualityLevel::High:
+			scale = 0.5f;
+			break;
+		case EQualityLevel::Epic:
+			scale = 1.0f;
+			break;
+		}
+
+		if (CinematicsDirector.IsActive() == true)
+		{
+			PostProcessSettings.bOverride_MotionBlurAmount = true;
+			PostProcessSettings.MotionBlurAmount = FMath::Min(scale * 2.0f, 1.0f);
+		}
+		else
+		{
+			PostProcessSettings.bOverride_MotionBlurAmount = true;
+			PostProcessSettings.MotionBlurAmount = scale;
+		}
+	}
+	else
+	{
+		// Setup the depth-of-field for the menu scene.
+
+		PostProcessSettings.bOverride_DepthOfFieldFstop = true;
+		PostProcessSettings.DepthOfFieldFstop = 32.0f;
+		PostProcessSettings.bOverride_DepthOfFieldFocalDistance = true;
+		PostProcessSettings.DepthOfFieldFocalDistance = 250.0f;
+	}
+
+	UCameraPointComponent* cameraPoint = CinematicsDirector.GetCurrentCameraPoint();
+
+	if (cameraPoint != nullptr &&
+		CinematicsDirector.IsActive() == false)
+	{
+		cameraPoint->Reposition(false);
+	}
+
+	if ((CinematicsDirector.UsingSplineCamera() == true) ||
+		(CinematicsDirector.UsingCustomOverride() == true) ||
+		(cameraPoint != nullptr && cameraPoint->InheritNativeEffects == false))
+	{
+		ViewingActor = CinematicsDirector.GetCurrentVehicle();
+
+		CustomEffectsAmount = 0.0f;
+
+		SwitchEffectsToCustomControl();
+	}
+	else
+
+#pragma endregion CameraCinematics
+
 	{
 		ViewingActor = nullptr;
 
@@ -592,6 +700,14 @@ void UAdvancedCameraComponent::GetCameraView(float deltaSeconds, FMinimalViewInf
 	Super::GetCameraView(deltaSeconds, desiredView);
 
 	desiredView.FOV = UAdvancedCameraComponent::GetAdjustedFOV(playerController, desiredView.FOV);
+
+#pragma region CameraCinematics
+
+	// Let the cinematic camera do whatever it likes with the view if it's in control.
+
+	CinematicsDirector.GetCameraView(deltaSeconds, desiredView);
+
+#pragma endregion CameraCinematics
 
 	LastView = desiredView;
 }

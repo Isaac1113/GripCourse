@@ -39,4 +39,15 @@ public:
 	// Sphere for overlay detection.
 	UPROPERTY(EditDefaultsOnly, Category = Default)
 		UBoxComponent* CollisionShape = nullptr;
+
+#pragma region CameraCinematics
+
+	// Launch the camera into orbit.
+	void Launch(const FVector& cameraLocation, const FRotator& cameraRotation, FVector direction, float force, bool angleDownwards) const;
+
+	// Hibernate the camera so it doesn't affect anything in the scene.
+	void Hibernate() const;
+
+#pragma endregion CameraCinematics
+
 };

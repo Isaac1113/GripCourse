@@ -396,6 +396,21 @@ void APlayGameMode::BeginPlay()
 		}
 
 		vehicle->PostSpawn(index++, true, false);
+
+#pragma region CameraCinematics
+
+		if (vehicle->IsHumanPlayer() == true)
+		{
+			APlayerController* controller = Cast<APlayerController>(vehicle->GetController());
+
+			if (controller != nullptr)
+			{
+				controller->PlayerCameraManager->SetManualCameraFade(1.0f, FLinearColor(0.0f, 0.0f, 0.0f), true);
+			}
+		}
+
+#pragma endregion CameraCinematics
+
 	}
 
 #pragma region AIVehicleControl
@@ -511,6 +526,20 @@ void APlayGameMode::BeginPlay()
 			}
 		}
 	}
+
+#pragma region CameraCinematics
+
+	// Record all of the track cameras in the level.
+
+	for (TActorIterator<AStaticTrackCamera> actorItr(world); actorItr; ++actorItr)
+	{
+		if (FWorldFilter::IsValid(*actorItr, GlobalGameState) == true)
+		{
+			TrackCameras.Emplace(*actorItr);
+		}
+	}
+
+#pragma endregion CameraCinematics
 
 	LastOptionsResetTime = GetClock();
 }
@@ -983,6 +1012,26 @@ void APlayGameMode::Tick(float deltaSeconds)
 	if (clock == 0.0f)
 	{
 		LastOptionsResetTime = clock;
+
+#pragma region CameraCinematics
+
+		for (TActorIterator<ABaseVehicle> actorItr(GetWorld()); actorItr; ++actorItr)
+		{
+			ABaseVehicle* vehicle = *actorItr;
+
+			if (vehicle->IsHumanPlayer() == true)
+			{
+				APlayerController* controller = Cast<APlayerController>(vehicle->GetController());
+
+				if (controller != nullptr)
+				{
+					controller->PlayerCameraManager->StartCameraFade(1.0f, 0.0f, 3.0f, FLinearColor(0.0f, 0.0f, 0.0f), true, true);
+				}
+			}
+		}
+
+#pragma endregion CameraCinematics
+
 	}
 
 	// Handle the update of each game sequence by calling the appropriate function.
@@ -1154,6 +1203,183 @@ void APlayGameMode::UpdateRacePositions(float deltaSeconds)
 		{
 			raceStates.Emplace(&vehicle->GetRaceState());
 		}
+
+#pragma region VehicleCatchup
+
+		if (raceStates.Num() > 0)
+		{
+			// Now calculate the auto-catchup assistance.
+
+			raceStates.StableSort([] (const FPlayerRaceState& object1, const FPlayerRaceState& object2)
+				{
+					return object1.EternalRaceDistance > object2.EternalRaceDistance;
+				});
+
+			FVehicleCatchupCharacteristics& characteristics = GetDifficultyCharacteristics().VehicleCatchupCharacteristics;
+
+			// Pick the median race distance for all of the players in the race.
+
+			float median = raceStates[raceStates.Num() >> 1]->EternalRaceDistance;
+
+			if (numHumans == 0)
+			{
+				meanHumanDistance = median;
+			}
+
+			float centerOffset = characteristics.CentreOffset;
+			ABaseVehicle* player = GetVehicleForVehicleIndex(0);
+
+			if (GameHasEnded() == true)
+			{
+				LastLapRatio = FMath::Max(LastLapRatio - (deltaSeconds * 0.1f), 0.0f);
+			}
+			else
+			{
+				LastLapRatio = 0.0f;
+
+				if (player != nullptr)
+				{
+					if (GlobalGameState->IsGameModeLapBased() == true)
+					{
+						int32 lastLap = GlobalGameState->GeneralOptions.NumberOfLaps - 1;
+						float eventProgress = FMath::Min(player->GetRaceState().RaceDistance / (MasterRacingSplineLength * GlobalGameState->GeneralOptions.NumberOfLaps), 1.0f);
+
+						if ((eventProgress * GlobalGameState->GeneralOptions.NumberOfLaps) > lastLap)
+						{
+							LastLapRatio = (eventProgress * GlobalGameState->GeneralOptions.NumberOfLaps) - lastLap;
+						}
+					}
+				}
+			}
+
+			if (centerOffset > 0.0f)
+			{
+#if 0
+				float centerOffsetScale = 1.0f - LastLapRatio;
+				float centerCycle = FMath::Pow((FMath::Cos(GetRealTimeGameClock() * CatchupCyclingSpeed * PI * 2.0) * 0.5f) + 0.5f, 0.75f);
+#else
+				float centerOffsetScale = 1.0f;
+				float centerCycle = 1.0f;
+#endif
+
+				centerOffsetScale = FMath::Min(centerOffsetScale, centerCycle);
+
+				centerOffset = FMath::Lerp(FMath::Min(centerOffset, 100.0f), centerOffset, centerOffsetScale);
+			}
+
+			if (numHumans > 0)
+			{
+				meanHumanDistance = FMath::Max(meanHumanDistance + (centerOffset * 100.0f), 0.0f);
+			}
+
+			float minDistance = -1.0f;
+			float maxDistance = -1.0f;
+			float distanceSpread = characteristics.DistanceSpread * 0.5f;
+
+			for (ABaseVehicle* vehicle : Vehicles)
+			{
+				FPlayerRaceState& raceState = vehicle->GetRaceState();
+				bool usingLeadingCatchup = vehicle->GetUsingLeadingCatchup();
+				bool usingTrailingCatchup = vehicle->GetUsingTrailingCatchup();
+
+				if (minDistance < 0.0f)
+				{
+					minDistance = maxDistance = raceState.EternalRaceDistance;
+				}
+				else
+				{
+					minDistance = FMath::Min(minDistance, raceState.EternalRaceDistance);
+					maxDistance = FMath::Max(maxDistance, raceState.EternalRaceDistance);
+				}
+
+				raceState.StockCatchupRatioUnbounded = FMathEx::CentimetersToMeters(raceState.EternalRaceDistance - median) / distanceSpread;
+
+				float delay = characteristics.SpeedChangeDelay * 3.0f;
+				float distanceTarget = (vehicle->HasAIDriver() == true) ? meanHumanDistance : median;
+				float distance = FMathEx::CentimetersToMeters(raceState.EternalRaceDistance - distanceTarget);
+
+				// Distance is distance of this car from the middle of the pack in meters.
+				// Positive figures mean leading and negative trailing.
+
+				distance = FMath::Clamp(distance, -distanceSpread, distanceSpread);
+
+				// We factor the drag of the vehicle for now, so initial and low-speed
+				// handling isn't affected, just the top speed will vary. We vary it by
+				// around 20% in either direction to slow you down or speed you up accordingly.
+
+				raceState.RaceCatchupRatio = distance / distanceSpread;
+
+				if (raceState.RaceCatchupRatio > raceState.DragCatchupRatio)
+				{
+					// If we're slowing up because we're progressing through the pack then make
+					// the delay spread out longer so this vehicle has a chance to get ahead.
+					// This will then induce a rolling effect as vehicles overtake and then
+					// fall back and create a kind of natural cycle while injecting excitement
+					// into the game.
+
+					delay *= 2.5f;
+				}
+
+				// Slowly drift from one ratio to the next, providing nice overlap in
+				// vehicle positioning.
+
+				raceState.DragCatchupRatio = FMathEx::GravitateToTarget(raceState.DragCatchupRatio, raceState.RaceCatchupRatio, (1.0f / delay) * deltaSeconds);
+
+				// Calculate the drag scale for the vehicle based on its new drag catchup ratio.
+
+				float normalized = FMathEx::NegativePow(raceState.DragCatchupRatio, 0.5f);
+
+				if (normalized < 0.0f)
+				{
+					// If we're behind.
+
+					normalized *= ((vehicle->HasAIDriver() == true) ? characteristics.DragScaleAtRearNonHumans : characteristics.DragScaleAtRearHumans);
+				}
+				else
+				{
+					// If we're in front.
+
+					normalized *= ((vehicle->HasAIDriver() == true) ? characteristics.DragScaleAtFrontNonHumans : characteristics.DragScaleAtFrontHumans);
+				}
+
+				raceState.DragScale = 1.0f;
+
+				if (normalized > 0.0f)
+				{
+					if (usingLeadingCatchup == true)
+					{
+						raceState.DragScale += normalized;
+					}
+				}
+				else
+				{
+					if (usingTrailingCatchup == true)
+					{
+						raceState.DragScale += normalized;
+					}
+				}
+
+				// Now consider the relative position of this vehicle to the other humans
+				// in the game.
+
+				distance = FMathEx::CentimetersToMeters(raceState.EternalRaceDistance - meanHumanDistance);
+
+				// Distance is distance of this car from the middle of the human pack in meters.
+				// Positive figures mean leading and negative trailing.
+
+				distance = FMath::Clamp(distance, -distanceSpread, distanceSpread);
+
+				// Now calculate the boost catchup ratio.
+
+				distanceSpread = 250.0f;
+				distance = FMathEx::CentimetersToMeters(raceState.EternalRaceDistance - distanceTarget);
+				distance = FMath::Clamp(distance, -distanceSpread, distanceSpread);
+
+				raceState.BoostCatchupRatio = distance / distanceSpread;
+			}
+		}
+
+#pragma endregion VehicleCatchup
 
 		if (PastGameSequenceStart() == true)
 		{

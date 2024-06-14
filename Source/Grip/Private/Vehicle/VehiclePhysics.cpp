@@ -837,6 +837,57 @@ void ABaseVehicle::SubstepPhysics(float deltaSeconds, FBodyInstance* bodyInstanc
 			if (TireFrictionModel->Model == ETireFrictionModel::Arcade)
 			{
 
+#pragma region VehicleCatchup
+
+				if (GetRaceState().DragCatchupRatio < 0.0f)
+				{
+					bool scaleGrip = UsingTrailingCatchup;
+
+					if (AI.BotVehicle == true)
+					{
+#if !GRIP_BOT_TRAILING_GRIPINESS
+						scaleGrip = false;
+#endif // !GRIP_BOT_TRAILING_GRIPINESS
+					}
+					else
+					{
+#if !GRIP_HOM_TRAILING_GRIPINESS
+						scaleGrip = false;
+#endif // !GRIP_HOM_TRAILING_GRIPINESS
+					}
+
+					if (scaleGrip == true)
+					{
+						// Handle the tightening of grip if we're trying to catchup and have been given
+						// an artificial speed boost to do so.
+
+						wheel.LateralForceVector *= 1.0f + (((AI.BotVehicle == true) ? CatchupCharacteristics.GripScaleAtRearNonHumans : CatchupCharacteristics.GripScaleAtRearHumans) * -GetRaceState().DragCatchupRatio);
+
+						check(FMath::IsNaN(GetRaceState().DragCatchupRatio) == false);
+						check(wheel.LateralForceVector.ContainsNaN() == false);
+					}
+				}
+
+#if GRIP_BOT_LEADING_SLIPPINESS
+
+				if (GetRaceState().DragCatchupRatio > 0.0f)
+				{
+					if (AI.BotVehicle == true)
+					{
+						// Handle the loosening of grip if we're a leading bot vehicle and want human
+						// players to catchup (by the bot vehicles not making corners due to lost grip).
+
+						wheel.LateralForceVector *= 1.0f - CatchupCharacteristics.GripScaleAtFrontNonHumans * GetRaceState().DragCatchupRatio;
+
+						check(FMath::IsNaN(GetRaceState().DragCatchupRatio) == false);
+						check(wheel.LateralForceVector.ContainsNaN() == false);
+					}
+				}
+
+#endif // GRIP_BOT_LEADING_SLIPPINESS
+
+#pragma endregion VehicleCatchup
+
 #pragma region VehicleBidirectionalTraction
 
 				if (absWheelRPS > KINDA_SMALL_NUMBER)

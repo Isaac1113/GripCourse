@@ -1496,11 +1496,17 @@ bool UFlippableSpringArmComponent::OwnerIsBeingWatched() const
 
 		for (ABaseVehicle* vehicle : vehicles)
 		{
+
+#pragma region CameraCinematics
+
 			if ((vehicle->IsHumanPlayer() == true) &&
-				(vehicle == thisVehicle))
+				((vehicle == thisVehicle) || (vehicle->Camera->GetCinematicsDirector().RequiresActiveSpringArm(thisVehicle) == true)))
 			{
 				return true;
 			}
+
+#pragma endregion CameraCinematics
+
 		}
 	}
 

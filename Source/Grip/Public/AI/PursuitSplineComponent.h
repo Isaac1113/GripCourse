@@ -649,6 +649,31 @@ public:
 
 #pragma endregion PickupMissile
 
+#pragma region CameraCinematics
+
+	// Get the surface sections of the spline.
+	virtual TArray<FSplineSection> GetSurfaceSections() const override;
+
+	// Get the surface break property of the spline over distance.
+	virtual bool GetSurfaceBreakOverDistance(float distance, float& overDistance, int32 direction) const override;
+
+	// Get the grounded property of the spline over distance.
+	virtual bool GetGroundedOverDistance(float distance, float& overDistance, int32 direction) const override;
+
+	// Get the clearances of the spline.
+	virtual TArray<float> GetClearancesFromSurface() const override;
+
+	// How much open space is the around the spline center line for a given spline offset and clearance angle?
+	float GetClearance(float distance, FVector splineOffset, float clearanceAngle = 90.0f) const;
+
+	// Get the weather allowed property of the spline over distance.
+	bool GetWeatherAllowedOverDistance(float distance, float& overDistance, int32 direction) const;
+
+	// Is weather allowed at a distance along a spline? Between 0 and 1.
+	float IsWeatherAllowed(float distance) const;
+
+#pragma endregion CameraCinematics
+
 };
 
 /**

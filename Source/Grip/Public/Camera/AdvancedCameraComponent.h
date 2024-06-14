@@ -325,4 +325,21 @@ protected:
 
 #pragma endregion VehicleCamera
 
+#pragma region CameraCinematics
+
+public:
+
+	// Cinematic manager for this camera.
+	FCinematicsDirector& GetCinematicsDirector()
+	{ return CinematicsDirector; }
+
+private:
+
+	// Cinematics director for this camera.
+	FCinematicsDirector CinematicsDirector = FCinematicsDirector(this);
+
+	friend class FCinematicsDirector;
+
+#pragma endregion CameraCinematics
+
 };

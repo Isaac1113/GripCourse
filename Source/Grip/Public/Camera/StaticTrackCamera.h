@@ -60,7 +60,69 @@ public:
 	UFUNCTION()
 		void OnVehicleHit(class UPrimitiveComponent* hitComponent, class AActor* otherActor, class UPrimitiveComponent* otherComponent, int32 otherBodyIndex, bool fromSweep, const FHitResult& sweepResult);
 
+#pragma region CameraCinematics
+
+public:
+
+	// Reset the hit state of the camera.
+	void ResetCameraHit()
+	{ CameraHit = false; CameraHitReported = false; AdjustedYaw = 0.0f; }
+
+	// Has this static camera been hit by a vehicle?
+	bool HasCameraBeenHit() const
+	{ return CameraHit; }
+
+	// Has this static camera just been hit by a vehicle?
+	bool HasCameraJustBeenHit();
+
+	// Get the adjusted yaw value for when a camera has been hit by a vehicle.
+	float GetAdjustedYaw() const
+	{ return AdjustedYaw; }
+
+	// Get the velocity at which the camera was impacted by a vehicle.
+	FVector GetCameraHitVelocity() const
+	{ return CameraHitVelocity; }
+
+protected:
+
+	// Do some initialization when the game is ready to play.
+	virtual void BeginPlay() override;
+
+	// Do some shutdown when the actor is being destroyed.
+	virtual void EndPlay(const EEndPlayReason::Type endPlayReason) override;
+
 private:
+
+	// Has the camera been hit by a vehicle.
+	bool CameraHit = false;
+
+	// If the camera has been hit by a vehicle then has that hit been reported yet?
+	bool CameraHitReported = false;
+
+	// The velocity at which the camera was impacted by a vehicle.
+	FVector CameraHitVelocity = FVector::ZeroVector;
+
+	// The adjusted yaw value for when a camera has been hit by a vehicle.
+	float AdjustedYaw = 0.0f;
+
+	// The location where the camera was impacted by a vehicle.
+	FVector ImpactLocation = FVector::ZeroVector;
+
+	// The distance around the track.
+	float DistanceAlongMasterRacingSpline = 0.0f;
+
+	// The angular difference between the camera's pointing direction and the track direction.
+	float AngleVsTrack = 0.0f;
+
+	// The nearest pursuit spline.
+	TWeakObjectPtr<UPursuitSplineComponent> LinkedPursuitSpline;
+
+	// All of the nearest pursuit splines.
+	TArray<TWeakObjectPtr<UPursuitSplineComponent>> LinkedPursuitSplines;
+
+	friend class FCinematicsDirector;
+
+#pragma endregion CameraCinematics
 
 	// Collision box to detect vehicles impacting the camera.
 	UPROPERTY(Transient)

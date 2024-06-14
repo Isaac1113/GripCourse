@@ -304,6 +304,151 @@ float UAdvancedSplineComponent::GetSide(float distance, const FVector& fromLocat
 
 void UAdvancedSplineComponent::CalculateSections()
 {
+
+#pragma region CameraCinematics
+
+	// Calculate just the StraightSections of the spline. The DroneSections will
+	// need to be done elsewhere as we don't have the information to do that here.
+
+	float length = GetSplineLength();
+
+	StraightSections = GetSurfaceSections();
+
+	// Create a list of rotational differences along the length of the spline
+	// for us to quickly examine to determine differences for specific sections.
+
+	float distance = 0.0f;
+	float iterationDistance = FMathEx::MetersToCentimeters(ExtendedPointMeters);
+	int32 numIterations = FMath::CeilToInt(length / iterationDistance);
+
+	TArray<FRotator> rotations;
+
+	rotations.Reserve(numIterations);
+
+	FRotator lastRotation = GetQuaternionAtDistanceAlongSpline(distance, ESplineCoordinateSpace::Local).Rotator();
+
+	for (int32 i = 0; i < numIterations; i++)
+	{
+		distance += iterationDistance;
+		distance = ClampDistanceAgainstLength(distance, length);
+
+		FRotator rotation = GetQuaternionAtDistanceAlongSpline(distance, ESplineCoordinateSpace::Local).Rotator();
+
+		rotations.Emplace(FMathEx::GetUnsignedDegreesDifference(lastRotation, rotation));
+
+		lastRotation = rotation;
+	}
+
+	TArray<float> clearances = GetClearancesFromSurface();
+
+	for (int32 index = 0; index < StraightSections.Num(); index++)
+	{
+		FSplineSection& section = StraightSections[index];
+
+		int32 i = 0;
+		int32 j = 0;
+		float d0 = section.StartDistance;
+		float d1 = section.EndDistance;
+		int32 i0 = FMath::Max(FMath::FloorToInt(d0 / iterationDistance), 0);
+		int32 i1 = FMath::Min(FMath::CeilToInt(d1 / iterationDistance), clearances.Num() - 1);
+
+		for (i = i0; i <= i1; i++)
+		{
+			if (clearances[i] < 12.5f * 100.0f)
+			{
+				// Too low, so break up this section.
+
+				for (j = i + 1; j <= i1; j++)
+				{
+					if (clearances[j] >= 12.5f * 100.0f)
+					{
+						break;
+					}
+				}
+
+				float ed0 = FMath::Max((float)(i - 1) * iterationDistance, section.StartDistance);
+				float ed1 = FMath::Min((float)j * iterationDistance, section.EndDistance);
+				float ed2 = section.EndDistance;
+
+				section.EndDistance = ed0;
+
+				if (ed1 < ed2)
+				{
+					StraightSections.Insert(FSplineSection(ed1, ed2), index + 1);
+				}
+
+				break;
+			}
+		}
+	}
+
+	// OK, so now we have a list of section relative close to the ground without any
+	// big bumps or drops in the ground closest to the spline.
+
+	// Now we need to remove the sections that have sharp rotational changes.
+
+	float maxCurvaturePerSecond = 75.0f;
+	float baseSpeed = FMathEx::KilometersPerHourToMetersPerSecond(700.0f);
+	float maxCurvaturePerStep = maxCurvaturePerSecond / (baseSpeed / ExtendedPointMeters);
+
+	for (int32 index = 0; index < StraightSections.Num(); index++)
+	{
+		FSplineSection& section = StraightSections[index];
+
+		if (section.StartDistance < section.EndDistance)
+		{
+			int32 i = 0;
+			int32 j = 0;
+			float d0 = section.StartDistance;
+			float d1 = section.EndDistance;
+			int32 i0 = FMath::Max(FMath::FloorToInt(d0 / iterationDistance), 0);
+			int32 i1 = FMath::Min(FMath::CeilToInt(d1 / iterationDistance), rotations.Num() - 1);
+
+			for (i = i0; i <= i1; i++)
+			{
+				if (FMath::Max(rotations[i].Yaw, rotations[i].Pitch) > maxCurvaturePerStep ||
+					rotations[i].Roll > maxCurvaturePerStep * 2.0f)
+				{
+					// Too windy, so break up this section.
+
+					for (j = i + 1; j <= i1; j++)
+					{
+						if (FMath::Max(rotations[j].Yaw, rotations[j].Pitch) <= maxCurvaturePerStep &&
+							rotations[j].Roll <= maxCurvaturePerStep * 2.0f)
+						{
+							break;
+						}
+					}
+
+					float ed0 = FMath::Max((float)(i - 1) * iterationDistance, section.StartDistance);
+					float ed1 = FMath::Min((float)j * iterationDistance, section.EndDistance);
+					float ed2 = section.EndDistance;
+
+					section.EndDistance = ed0;
+
+					if (ed1 < ed2)
+					{
+						StraightSections.Insert(FSplineSection(ed1, ed2), index + 1);
+					}
+
+					break;
+				}
+			}
+		}
+	}
+
+	for (int32 index = 0; index < StraightSections.Num(); index++)
+	{
+		FSplineSection& section = StraightSections[index];
+
+		if (section.EndDistance - section.StartDistance < 100.0f * 100.0f)
+		{
+			StraightSections.RemoveAt(index--);
+		}
+	}
+
+#pragma endregion CameraCinematics
+
 }
 
 #pragma region AIVehicleControl
@@ -365,5 +510,77 @@ FRotator UAdvancedSplineComponent::GetCurvatureOverDistance(float distance, floa
 }
 
 #pragma endregion AIVehicleControl
+
+#pragma region CameraCinematics
+
+/**
+* Get the distance into between a start and end point.
+***********************************************************************************/
+
+float UAdvancedSplineComponent::GetDistanceInto(float distance, float start, float end) const
+{
+	float length = GetSplineLength();
+
+	distance = ClampDistanceAgainstLength(distance, length);
+	start = ClampDistanceAgainstLength(start, length);
+	end = ClampDistanceAgainstLength(end, length);
+
+	if (start > end)
+	{
+		if (distance >= start)
+		{
+			return distance - start;
+		}
+		else if (distance <= end)
+		{
+			return distance + (length - start);
+		}
+	}
+	else
+	{
+		if (distance >= start && distance <= end)
+		{
+			return distance - start;
+		}
+	}
+
+	return 0.0f;
+}
+
+/**
+* Get the distance left between a start and end point.
+***********************************************************************************/
+
+float UAdvancedSplineComponent::GetDistanceLeft(float distance, float start, float end) const
+{
+	float length = GetSplineLength();
+
+	distance = ClampDistanceAgainstLength(distance, length);
+	start = ClampDistanceAgainstLength(start, length);
+	end = ClampDistanceAgainstLength(end, length);
+
+	if (start > end)
+	{
+		if (distance >= start)
+		{
+			return end + (length - distance);
+		}
+		else if (distance <= end)
+		{
+			return end - distance;
+		}
+	}
+	else
+	{
+		if (distance >= start && distance <= end)
+		{
+			return end - distance;
+		}
+	}
+
+	return 0.0f;
+}
+
+#pragma endregion CameraCinematics
 
 #pragma endregion NavigationSplines

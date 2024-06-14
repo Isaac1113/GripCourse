@@ -961,6 +961,150 @@ void UPursuitSplineComponent::ApplyComponentInstanceData(FPursuitSplineInstanceD
 void UPursuitSplineComponent::CalculateSections()
 {
 	Super::CalculateSections();
+
+#pragma region CameraCinematics
+
+	float length = GetSplineLength();
+
+	DroneSections.Empty();
+
+	if (true)
+	{
+		// Now we need to determine the straight sections of this spline. We do
+		// this by iterating 100m forwards at a time, and measuring the curvature
+		// of the track 100m in front of the point and storing those in a list.
+		// We then join any straight sections to each other to form a complete
+		// length. To that, we then iterate more slowly from each of the ends
+		// until the curvature becomes too great and cap them.
+
+		float distance = 0.0f;
+		float maxCurvature = 50.0f;
+		float baselargeSectionLength = 100.0f * 100.0f;
+		float largeSectionLength = baselargeSectionLength;
+		int32 numSections = FMath::CeilToInt(length / baselargeSectionLength);
+
+		largeSectionLength = length / numSections;
+		maxCurvature *= largeSectionLength / baselargeSectionLength;
+
+		for (int32 i = 0; i < numSections; i++)
+		{
+			float overDistance = largeSectionLength;
+			bool grounded = GetGroundedOverDistance(distance, overDistance, 1);
+			overDistance = largeSectionLength;
+			bool broken = GetSurfaceBreakOverDistance(distance, overDistance, 1);
+			overDistance = largeSectionLength;
+			bool openAir = GetWeatherAllowedOverDistance(distance, overDistance, 1);
+			overDistance = largeSectionLength;
+			FRotator curvature = UAdvancedSplineComponent::GetCurvatureOverDistance(distance, overDistance, 1, FQuat::Identity, true);
+
+			if (grounded == true &&
+				broken == false &&
+				openAir == true &&
+				curvature.Yaw < maxCurvature &&
+				curvature.Pitch < maxCurvature)
+			{
+				overDistance = largeSectionLength - overDistance;
+
+				float extendEnd = FMath::Min(distance + overDistance, length);
+
+				if (DroneSections.Num() > 0 &&
+					FMath::Abs(DroneSections[DroneSections.Num() - 1].EndDistance - distance) < 1.0f)
+				{
+					// Extend the last section.
+
+					DroneSections[DroneSections.Num() - 1].EndDistance = extendEnd;
+				}
+				else
+				{
+					// Begin a new section.
+
+					DroneSections.Emplace(FSplineSection(distance, extendEnd));
+				}
+			}
+
+			distance += largeSectionLength;
+		}
+
+		if (IsClosedLoop() == true &&
+			DroneSections.Num() > 1 &&
+			DroneSections[0].StartDistance < 1.0f &&
+			DroneSections[DroneSections.Num() - 1].EndDistance > length - 1.0f)
+		{
+			// The first section and the last section are contiguous, so we need to merge them.
+
+			DroneSections[0].StartDistance = DroneSections[DroneSections.Num() - 1].StartDistance;
+			DroneSections.RemoveAt(DroneSections.Num() - 1);
+		}
+
+		numSections = DroneSections.Num();
+
+		for (int32 i = 0; i < numSections; i++)
+		{
+			FSplineSection& section = DroneSections[i];
+
+			if (FMath::Abs((section.EndDistance - section.StartDistance) - length) < 1.0f)
+			{
+				// This section already encompasses the whole spline so no need to extend it.
+
+				continue;
+			}
+
+			for (int32 j = 0; j < 2; j++)
+			{
+				float extend = 0.0f;
+				int32 numIterations = 5;
+				float smallSectionLength = largeSectionLength / numIterations;
+				float start = (j == 0) ? section.StartDistance : section.EndDistance;
+				float direction = (j == 0) ? -1.0f : 1.0f;
+
+				for (int32 k = 0; k < numIterations; k++)
+				{
+					float overDistance = smallSectionLength;
+					bool grounded = GetGroundedOverDistance(start + (smallSectionLength * k * direction), overDistance, direction);
+					overDistance = smallSectionLength;
+					bool broken = GetSurfaceBreakOverDistance(start + (smallSectionLength * k * direction), overDistance, direction);
+					overDistance = smallSectionLength;
+					bool openAir = GetWeatherAllowedOverDistance(start + (smallSectionLength * k * direction), overDistance, direction);
+					overDistance = smallSectionLength;
+					FRotator curvature = UAdvancedSplineComponent::GetCurvatureOverDistance(start + (smallSectionLength * k * direction), overDistance, direction, FQuat::Identity, true);
+
+					if (grounded == false ||
+						broken == true ||
+						openAir == false ||
+						curvature.Yaw > maxCurvature / numIterations ||
+						curvature.Pitch > maxCurvature / numIterations)
+					{
+						break;
+					}
+
+					extend += smallSectionLength - overDistance;
+				}
+
+				if (j == 0)
+				{
+					section.StartDistance = ClampDistanceAgainstLength(section.StartDistance - extend, length);
+				}
+				else
+				{
+					section.EndDistance = ClampDistanceAgainstLength(section.EndDistance + extend, length);
+
+					if (IsClosedLoop() == false &&
+						FMath::Abs(section.EndDistance - section.StartDistance) < 100.0f * 100.0f)
+					{
+						numSections--;
+						DroneSections.RemoveAt(i--);
+					}
+				}
+			}
+		}
+	}
+	else
+	{
+		DroneSections.Emplace(FSplineSection(0.0f, length));
+	}
+
+#pragma endregion CameraCinematics
+
 }
 
 /**
@@ -2780,5 +2924,475 @@ float UPursuitSplineComponent::GetClearanceOverDistance(float distance, float& o
 }
 
 #pragma endregion PickupMissile
+
+#pragma region CameraCinematics
+
+/**
+* Get the surface sections of the spline.
+***********************************************************************************/
+
+TArray<FSplineSection> UPursuitSplineComponent::GetSurfaceSections() const
+{
+	// NOTE: This assumes that a spline will start unbroken, and makes no attempt
+	// to determine brokenness over the loop point of a looped spline.
+
+	bool broken = false;
+	bool nowBroken = false;
+	TArray<FPursuitPointExtendedData>& pursuitPointExtendedData = PursuitSplineParent->PointExtendedData;
+	int32 numKeys = pursuitPointExtendedData.Num();
+
+	TArray<FSplineSection> sections;
+
+	int32 i = 0;
+	int32 firstKey = 0;
+	FVector groundOffset = FVector::ZeroVector;
+
+	for (i = 0; i < numKeys; i++)
+	{
+		FPursuitPointExtendedData& p0 = pursuitPointExtendedData[i];
+
+		// If ground is 25m or more away, or there's a 5m or more difference
+		// in the course of one 10m length, then consider the surface broken.
+
+		nowBroken = false;
+
+		if (p0.EnvironmentDistances[p0.UseGroundIndex] < 0.0f ||
+			p0.EnvironmentDistances[p0.UseGroundIndex] > 25.0f * 100.0f)
+		{
+			nowBroken = true;
+		}
+		else if (i != 0)
+		{
+			if (FVector::DotProduct(groundOffset, p0.UseGroundOffset) < 0.0f ||
+				(groundOffset - p0.UseGroundOffset).Size() > 5.0f * 100.0f)
+			{
+				nowBroken = true;
+			}
+		}
+
+		groundOffset = p0.UseGroundOffset;
+
+		if (nowBroken == false)
+		{
+			if (broken == true)
+			{
+				firstKey = i;
+			}
+		}
+		else
+		{
+			if (broken == false)
+			{
+				if (i - 1 > firstKey)
+				{
+					sections.Emplace(FSplineSection(pursuitPointExtendedData[firstKey].Distance, pursuitPointExtendedData[i - 1].Distance));
+				}
+			}
+		}
+
+		broken = nowBroken;
+	}
+
+	if (nowBroken == false)
+	{
+		i--;
+
+		if (firstKey < i)
+		{
+			sections.Emplace(FSplineSection(pursuitPointExtendedData[firstKey].Distance, pursuitPointExtendedData[i].Distance));
+		}
+	}
+
+	return sections;
+}
+
+/**
+* Get the surface break property of the spline over distance.
+***********************************************************************************/
+
+bool UPursuitSplineComponent::GetSurfaceBreakOverDistance(float distance, float& overDistance, int32 direction) const
+{
+	bool broken = false;
+
+	TArray<FPursuitPointExtendedData>& pursuitPointExtendedData = PursuitSplineParent->PointExtendedData;
+
+	if (pursuitPointExtendedData.Num() < 2)
+	{
+		return broken;
+	}
+
+	float endDistance = distance + (overDistance * direction);
+
+	if (IsClosedLoop() == false)
+	{
+		endDistance = ClampDistance(endDistance);
+		overDistance -= FMath::Abs(endDistance - distance);
+	}
+	else
+	{
+		overDistance = 0.0f;
+	}
+
+	float offset = FMathEx::MetersToCentimeters(ExtendedPointMeters);
+
+	distance = ClampDistance(distance - offset * direction);
+	endDistance = ClampDistance(endDistance + (offset * 2.0f * direction));
+
+	int32 thisKey = 0;
+	int32 nextKey = 0;
+	float ratio = 0.0f;
+
+	GetExtendedPointKeys(distance, thisKey, nextKey, ratio);
+
+	int32 key0 = (direction < 0) ? nextKey : thisKey;
+
+	GetExtendedPointKeys(endDistance, thisKey, nextKey, ratio);
+
+	int32 key1 = (direction < 0) ? thisKey : nextKey;
+	int32 numKeys = pursuitPointExtendedData.Num();
+	FVector groundOffset = FVector::ZeroVector;
+
+	for (int32 i = key0; i != key1;)
+	{
+		FPursuitPointExtendedData& p0 = pursuitPointExtendedData[i];
+
+		if (p0.EnvironmentDistances[p0.UseGroundIndex] < 0.0f ||
+			p0.EnvironmentDistances[p0.UseGroundIndex] > 25.0f * 100.0f)
+		{
+			broken = true;
+			break;
+		}
+
+		if (i != key0)
+		{
+			if (FVector::DotProduct(groundOffset, p0.UseGroundOffset) < 0.0f ||
+				(groundOffset - p0.UseGroundOffset).Size() > 5.0f * 100.0f)
+			{
+				broken = true;
+				break;
+			}
+		}
+
+		groundOffset = p0.UseGroundOffset;
+
+		if (direction < 0)
+		{
+			if (--i < 0)
+			{
+				i = numKeys - 1;
+			}
+		}
+		else
+		{
+			if (++i == numKeys)
+			{
+				i = 0;
+			}
+		}
+	}
+
+	return broken;
+}
+
+/**
+* Get the grounded property of the spline over distance.
+* Grounded meaning is there ground directly underneath the spline in world space?
+***********************************************************************************/
+
+bool UPursuitSplineComponent::GetGroundedOverDistance(float distance, float& overDistance, int32 direction) const
+{
+	bool grounded = true;
+
+	TArray<FPursuitPointExtendedData>& pursuitPointExtendedData = PursuitSplineParent->PointExtendedData;
+
+	if (pursuitPointExtendedData.Num() < 2)
+	{
+		return grounded;
+	}
+
+	float endDistance = distance + (overDistance * direction);
+
+	if (IsClosedLoop() == false)
+	{
+		endDistance = ClampDistance(endDistance);
+		overDistance -= FMath::Abs(endDistance - distance);
+	}
+	else
+	{
+		overDistance = 0.0f;
+	}
+
+	int32 thisKey = 0;
+	int32 nextKey = 0;
+	float ratio = 0.0f;
+
+	GetExtendedPointKeys(distance, thisKey, nextKey, ratio);
+
+	int32 key0 = (direction < 0) ? nextKey : thisKey;
+
+	GetExtendedPointKeys(endDistance, thisKey, nextKey, ratio);
+
+	int32 key1 = (direction < 0) ? thisKey : nextKey;
+	int32 numKeys = pursuitPointExtendedData.Num();
+
+	for (int32 i = key0; i != key1;)
+	{
+		FPursuitPointExtendedData& p0 = pursuitPointExtendedData[i];
+
+		if (p0.EnvironmentDistances[FPursuitPointExtendedData::NumDistances >> 1] < 0.0f ||
+			p0.EnvironmentDistances[FPursuitPointExtendedData::NumDistances >> 1] > 100.0f * 100.0f)
+		{
+			grounded = false;
+			break;
+		}
+
+		if (direction < 0)
+		{
+			if (--i < 0)
+			{
+				i = numKeys - 1;
+			}
+		}
+		else
+		{
+			if (++i == numKeys)
+			{
+				i = 0;
+			}
+		}
+	}
+
+	return grounded;
+}
+
+/**
+* Get the clearances of the spline.
+***********************************************************************************/
+
+TArray<float> UPursuitSplineComponent::GetClearancesFromSurface() const
+{
+	TArray<float> clearances;
+
+	TArray<FPursuitPointExtendedData>& pursuitPointExtendedData = PursuitSplineParent->PointExtendedData;
+	int32 numKeys = pursuitPointExtendedData.Num();
+
+	for (int32 i = 0; i < numKeys; i++)
+	{
+		FPursuitPointExtendedData& p0 = pursuitPointExtendedData[i];
+		float clearance = 0.0f;
+		int32 center = p0.UseGroundIndex;
+		float d0 = p0.EnvironmentDistances[center];
+
+		clearance += (d0 > 0.0f) ? d0 : UnlimitedSplineDistance;
+
+		center = (p0.UseGroundIndex + (FPursuitPointExtendedData::NumDistances >> 1)) % FPursuitPointExtendedData::NumDistances;
+		d0 = p0.EnvironmentDistances[center];
+
+		clearance += (d0 > 0.0f) ? d0 : UnlimitedSplineDistance;
+
+		clearances.Emplace(clearance);
+	}
+
+	return clearances;
+}
+
+/**
+* How much open space is the around the spline center line for a given spline offset
+* and clearance angle?
+***********************************************************************************/
+
+float UPursuitSplineComponent::GetClearance(float distance, FVector splineOffset, float clearanceAngle) const
+{
+	TArray<FPursuitPointExtendedData>& pursuitPointExtendedData = PursuitSplineParent->PointExtendedData;
+
+	if (pursuitPointExtendedData.Num() < 2)
+	{
+		return 0.0f;
+	}
+
+	int32 thisKey = 0;
+	int32 nextKey = 0;
+	float ratio = 0.0f;
+
+	GetExtendedPointKeys(distance, thisKey, nextKey, ratio);
+
+	FPursuitPointExtendedData& p0 = pursuitPointExtendedData[thisKey];
+	FPursuitPointExtendedData& p1 = pursuitPointExtendedData[nextKey];
+
+	// The angle in radians of the location we've been given compared to the spline's center.
+
+	float radians = FMath::Atan2(splineOffset.Y, splineOffset.Z);
+
+	if (radians < 0.0f)
+	{
+		radians = PI * 2.0f + radians;
+	}
+
+	// Convert the angle in radians to an index number in our lookup table.
+
+	float radiansToNumDistances = (radians / (PI * 2.0f)) * FPursuitPointExtendedData::NumDistances;
+	int32 center = FMath::FloorToInt(radiansToNumDistances);
+	float distanceRatio = FMath::Frac(radiansToNumDistances);
+
+	// Convert the clearance angle in degrees to an index number in our lookup table.
+
+	int32 numIndices = 1;
+	int32 startIndex = center;
+
+	if (clearanceAngle > KINDA_SMALL_NUMBER)
+	{
+		distanceRatio = 0.0f;
+		numIndices = FMath::CeilToInt((clearanceAngle / 360.0f) * FPursuitPointExtendedData::NumDistances) & ~1;
+		numIndices = FMath::Max(numIndices, 2);
+		startIndex -= (numIndices >> 1);
+		numIndices |= 1;
+	}
+
+	// Default to a kilometer clearance.
+
+	float minDistance = UnlimitedSplineDistance;
+
+	for (int32 i = 0; i < numIndices; i++)
+	{
+		float d3[2] = { 0.0f, 0.0f };
+
+		for (int32 j = 0; j < 2; j++)
+		{
+			int32 index = startIndex + i + j;
+
+			index = (index < 0) ? FPursuitPointExtendedData::NumDistances + index : index % FPursuitPointExtendedData::NumDistances;
+
+			float d0 = p0.EnvironmentDistances[index];
+			float d1 = p1.EnvironmentDistances[index];
+			float d2 = -1.0f;
+
+			if (d0 >= 0.0f && d1 >= 0.0f)
+			{
+				d2 = FMath::Lerp(d0, d1, ratio);
+			}
+			else if (d0 >= 0.0f)
+			{
+				d2 = d0;
+			}
+			else if (d1 >= 0.0f)
+			{
+				d2 = d1;
+			}
+
+			d3[j] = d2;
+		}
+
+		float d = -1.0f;
+
+		if (d3[0] >= 0.0f && d3[1] >= 0.0f)
+		{
+			d = d3[0] * (1.0f - distanceRatio) + d3[1] * distanceRatio;
+		}
+		else if (d3[0] >= 0.0f)
+		{
+			d = d3[0];
+		}
+		else if (d3[1] >= 0.0f)
+		{
+			d = d3[1];
+		}
+
+		if (d >= 0.0f)
+		{
+			if (minDistance > d)
+			{
+				minDistance = d;
+			}
+		}
+	}
+
+	return minDistance;
+}
+
+/**
+* Get the weather allowed property of the spline over distance.
+***********************************************************************************/
+
+bool UPursuitSplineComponent::GetWeatherAllowedOverDistance(float distance, float& overDistance, int32 direction) const
+{
+	bool weatherAllowed = true;
+	TArray<FPursuitPointExtendedData>& pursuitPointExtendedData = PursuitSplineParent->PointExtendedData;
+
+	if (pursuitPointExtendedData.Num() < 2)
+	{
+		return weatherAllowed;
+	}
+
+	float endDistance = distance + (overDistance * direction);
+
+	if (IsClosedLoop() == false)
+	{
+		endDistance = ClampDistance(endDistance);
+		overDistance -= FMath::Abs(endDistance - distance);
+	}
+	else
+	{
+		overDistance = 0.0f;
+	}
+
+	int32 thisKey = 0;
+	int32 nextKey = 0;
+	float ratio = 0.0f;
+
+	GetExtendedPointKeys(distance, thisKey, nextKey, ratio);
+
+	int32 key0 = (direction < 0) ? nextKey : thisKey;
+
+	GetExtendedPointKeys(endDistance, thisKey, nextKey, ratio);
+
+	int32 key1 = (direction < 0) ? thisKey : nextKey;
+	int32 numKeys = pursuitPointExtendedData.Num();
+
+	for (int32 i = key0; i != key1;)
+	{
+		FPursuitPointExtendedData& p0 = pursuitPointExtendedData[i];
+
+		if (p0.UseWeatherAllowed < 1.0f - KINDA_SMALL_NUMBER)
+		{
+			weatherAllowed = false;
+			break;
+		}
+
+		if (direction < 0)
+		{
+			if (--i < 0)
+			{
+				i = numKeys - 1;
+			}
+		}
+		else
+		{
+			if (++i == numKeys)
+			{
+				i = 0;
+			}
+		}
+	}
+
+	return weatherAllowed;
+}
+
+/**
+* Is weather allowed at a distance along a spline? Between 0 and 1.
+***********************************************************************************/
+
+float UPursuitSplineComponent::IsWeatherAllowed(float distance) const
+{
+	float key = SplineCurves.ReparamTable.Eval(distance, 0.0f);
+	int32 thisKey = ThisKey(key);
+	int32 nextKey = NextKey(key);
+
+	float v0 = PursuitSplineParent->PointData[thisKey].WeatherAllowed ? 1.0f : 0.0f;
+	float v1 = PursuitSplineParent->PointData[nextKey].WeatherAllowed ? 1.0f : 0.0f;
+
+	return FMath::Lerp(v0, v1, key - thisKey);
+}
+
+#pragma endregion CameraCinematics
 
 #pragma endregion NavigationSplines

@@ -193,6 +193,17 @@ void URaceCameraComponent::TickComponent(float deltaSeconds, enum ELevelTick tic
 	if (anyVehicle == nullptr &&
 		gameMode != nullptr)
 	{
+
+#pragma region CameraCinematics
+
+		if (GetCinematicsDirector().IsActive() == true)
+		{
+			anyVehicle = GetCinematicsDirector().GetCurrentVehicle();
+		}
+		else
+
+#pragma endregion CameraCinematics
+
 		{
 			TArray<ABaseVehicle*>& vehicles = gameMode->GetVehicles();
 

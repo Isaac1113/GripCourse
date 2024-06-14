@@ -70,4 +70,59 @@ public:
 	// Clip the camera longitudinally only when intersecting the environment?
 	UPROPERTY(EditAnywhere, Category = CameraPoint, meta = (EditCondition = "ClipLocation"))
 		bool ClipLongitudinally = false;
+
+#pragma region CameraCinematics
+
+public:
+
+	// Reset the camera point ready for viewing.
+	void Reset();
+
+	// Reset the original location and rotation to the current relative location and rotation.
+	void ResetOriginal()
+	{ OriginalLocation = GetRelativeLocation() * GetRelativeScale3D(); OriginalRotation = GetRelativeRotation(); }
+
+	// Reset the original rotation to the current relative rotation.
+	void ResetOriginalRotation()
+	{ OriginalRotation = GetRelativeRotation(); LockFlipped = false; }
+
+	// Get whether the camera was clipped against the environment.
+	bool WasClipped() const
+	{ return StateClipped; }
+
+	// Flip the camera with the parent actor and clip it to the environment.
+	bool Reposition(bool initialize, bool updateFlippedRotation = true);
+
+	// Is the camera point currently flipped?
+	bool IsFlipped() const
+	{ return StateFlipped; }
+
+private:
+
+	// Has the original state been set yet?
+	bool SetupOriginalState = false;
+
+	// Has the camera been flipped from its authored point?
+	bool StateFlipped = false;
+
+	// Has the camera been flipped from its authored point?
+	bool LockFlipped = false;
+
+	// Has the camera been clipped from its authored point?
+	bool StateClipped = false;
+
+	// Is the camera point currently linked to the root bone?
+	bool LinkedToRootBone = false;
+
+	// The minimum clip distance detected for the camera point.
+	float MinClip = -1.0f;
+
+	// The original location of the camera point.
+	FVector OriginalLocation = FVector::ZeroVector;
+
+	// The original rotation of the camera point.
+	FRotator OriginalRotation = FRotator::ZeroRotator;
+
+#pragma endregion CameraCinematics
+
 };

@@ -737,6 +737,15 @@ void ABaseVehicle::BeginPlay()
 
 #pragma endregion VehicleSpringArm
 
+#pragma region VehicleCatchup
+
+	if (PlayGameMode != nullptr)
+	{
+		CatchupCharacteristics = PlayGameMode->GetDifficultyCharacteristics().VehicleCatchupCharacteristics;
+	}
+
+#pragma endregion VehicleCatchup
+
 	Physics.StartLocation = GetActorLocation();
 	Physics.StartRotation = GetActorRotation();
 
@@ -822,6 +831,12 @@ void ABaseVehicle::Tick(float deltaSeconds)
 		return;
 	}
 
+#pragma region VehicleCatchup
+
+	UpdateCatchup();
+
+#pragma endregion VehicleCatchup
+
 #pragma region VehicleSpringArm
 
 	UpdateCockpitMaterials();
@@ -833,6 +848,19 @@ void ABaseVehicle::Tick(float deltaSeconds)
 	UpdateLaunchControl();
 
 #pragma endregion VehicleLaunchControl
+
+#pragma region CameraCinematics
+
+	// Kick in the cinematic camera at the appropriate point after the game has ended.
+
+	if (LocalPlayerIndex >= 0 &&
+		GetGameEndedClock() >= APlayGameMode::RaceOutroTime &&
+		Camera->GetCinematicsDirector().IsAttachedToVehicle() == false)
+	{
+		Camera->GetCinematicsDirector().AttachToAnyVehicle((IsVehicleDestroyed() == true) ? nullptr : this);
+	}
+
+#pragma endregion CameraCinematics
 
 	RaceState.Tick(deltaSeconds, PlayGameMode, GameState);
 
@@ -2053,6 +2081,24 @@ void ABaseVehicle::UpdatePowerAndGearing(float deltaSeconds, const FVector& xdir
 		Propulsion.CurrentJetEnginePower = FMath::Lerp(lowPower, (IsAirborne() == true) ? Propulsion.MaxJetEnginePowerAirborne : maxJetEnginePower, FMath::Pow(FMath::Max(currentGearPosition, 0.0f), 1.5f));
 
 		float j0 = Propulsion.CurrentJetEnginePower;
+
+#pragma region VehicleCatchup
+
+		float lowSpeedAccelerationAtRear = PlayGameMode->GetDifficultyCharacteristics().VehicleCatchupCharacteristics.LowSpeedAccelerationScaleAtRear;
+
+		if (RaceState.DragCatchupRatio < 0.0f)
+		{
+			if (UsingTrailingCatchup == true)
+			{
+				// Give more power if we need to catchup.
+
+				float catchupSpeedRatio = 1.0f - FMath::Pow(FMath::Min(GetSpeedKPH() / 500.0f, 1.0f), 2.5f);
+
+				Propulsion.CurrentJetEnginePower += j0 * (catchupSpeedRatio * -RaceState.DragCatchupRatio * lowSpeedAccelerationAtRear);
+			}
+		}
+
+#pragma endregion VehicleCatchup
 
 #pragma region VehicleBoost
 
@@ -4658,6 +4704,62 @@ void ABaseVehicle::UpdateVehicleDisorientation(float deltaSeconds)
 
 #pragma endregion VehicleSlowTurningRecovery
 
+#pragma region VehicleCatchup
+
+/**
+* Update the catchup assistance state of the vehicle.
+***********************************************************************************/
+
+void ABaseVehicle::UpdateCatchup()
+{
+	UsingLeadingCatchup = GameState->IsGameModeRace();
+
+	// We only allow trailing catchup with catchup assist has been enabled by the player.
+
+	UsingTrailingCatchup = UsingLeadingCatchup == true && GameState->GetCatchupAssist() == true;
+
+	if (UsingLeadingCatchup == true)
+	{
+		if (AI.BotVehicle == true)
+		{
+			// Unless switched off in code, we allow leading catchup in all situations for bots,
+			// to ensure they don't get ahead of humans too much.
+
+#if !GRIP_BOT_LEADING_SLOWDOWN
+			UsingLeadingCatchup = false;
+#endif // !GRIP_BOT_LEADING_SLOWDOWN
+		}
+		else
+		{
+#if GRIP_HOM_LEADING_SLOWDOWN
+			// Humans are only slowed down when leading if catchup assistance is switched on.
+
+			UsingLeadingCatchup &= GameState->GetCatchupAssist() == true;
+#else // GRIP_HOM_LEADING_SLOWDOWN
+			UsingLeadingCatchup = false;
+#endif // GRIP_HOM_LEADING_SLOWDOWN
+		}
+	}
+
+	if (UsingTrailingCatchup == true)
+	{
+		if (AI.BotVehicle == true)
+		{
+#if !GRIP_BOT_TRAILING_SPEEDUP
+			UsingTrailingCatchup = false;
+#endif // !GRIP_BOT_TRAILING_SPEEDUP
+		}
+		else
+		{
+#if !GRIP_HOM_TRAILING_SPEEDUP
+			UsingTrailingCatchup = false;
+#endif // !GRIP_HOM_TRAILING_SPEEDUP
+		}
+	}
+}
+
+#pragma endregion VehicleCatchup
+
 #pragma region VehicleBoost
 
 /**
@@ -5131,6 +5233,50 @@ void ABaseVehicle::UpdateCockpitMaterials()
 }
 
 #pragma endregion VehicleSpringArm
+
+#pragma region CameraCinematics
+
+/**
+* Get the camera ball for use with this vehicle.
+***********************************************************************************/
+
+ACameraBallActor* ABaseVehicle::GetCameraBall()
+{
+	if (GRIP_POINTER_VALID(CameraBallActor) == false)
+	{
+		FActorSpawnParameters spawnParams;
+
+		spawnParams.Owner = this;
+		spawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		CameraBallActor = World->SpawnActor<ACameraBallActor>(CameraBallClass, Camera->GetComponentLocation(), Camera->GetComponentRotation(), spawnParams);
+	}
+
+	return CameraBallActor.Get();
+}
+
+/**
+* Is the vehicle driving in alignment with its current pursuit spline and within
+* its bounds?
+***********************************************************************************/
+
+bool ABaseVehicle::IsDrivingStraightAndNarrow() const
+{
+	FVector location = AI.RouteFollower.ThisSpline->GetLocationAtDistanceAlongSpline(AI.RouteFollower.ThisDistance, ESplineCoordinateSpace::World);
+	FVector direction = AI.RouteFollower.ThisSpline->GetDirectionAtDistanceAlongSpline(AI.RouteFollower.ThisDistance, ESplineCoordinateSpace::World);
+
+	if ((GetActorLocation() - location).Size() < 5.0f * 100.0f &&
+		FVector::DotProduct(GetDirection(), direction) > 0.95f)
+	{
+		// Only if we're within 5 meters of the spline and we're heading tightly in the same direction.
+
+		return true;
+	}
+
+	return false;
+}
+
+#pragma endregion CameraCinematics
 
 #pragma region VehicleHUD
 
@@ -5647,6 +5793,31 @@ float ABaseVehicle::GetEventProgress()
 
 void ABaseVehicle::CycleCameraPoint()
 {
+
+#pragma region CameraCinematics
+
+	TArray<UActorComponent*> components;
+
+	GetComponents(UCameraPointComponent::StaticClass(), components);
+
+	int32 numComponents = components.Num();
+
+	if (++CameraPointIndex >= numComponents)
+	{
+		CameraPointIndex = 0;
+	}
+
+	if (CameraPointIndex < numComponents)
+	{
+		UCameraPointComponent* cameraPoint = Cast<UCameraPointComponent>(components[CameraPointIndex]);
+
+		ABaseGameMode::WakeComponent(cameraPoint);
+
+		Camera->GetCinematicsDirector().UseCameraPoint(cameraPoint);
+	}
+
+#pragma endregion CameraCinematics
+
 }
 
 /**
@@ -5905,6 +6076,32 @@ ABaseVehicle* ABaseVehicle::CameraTarget()
 {
 	ABaseVehicle* result = this;
 
+#pragma region CameraCinematics
+
+	if (IsHumanPlayer() == true &&
+		LocalPlayerIndex >= 0)
+	{
+		FCinematicsDirector& manager = Camera->GetCinematicsDirector();
+
+		if (manager.IsActive() == true)
+		{
+			result = manager.GetCurrentVehicle();
+		}
+#if !UE_BUILD_SHIPPING
+		else
+		{
+			result = PlayGameMode->CameraTarget(LocalPlayerIndex);
+		}
+#endif // !UE_BUILD_SHIPPING
+	}
+
+	if (result == nullptr)
+	{
+		result = this;
+	}
+
+#pragma endregion CameraCinematics
+
 	return result;
 }
 
@@ -6039,6 +6236,32 @@ bool ABaseVehicle::ShakeCamera(float strength)
 					result = true;
 				}
 			}
+
+#pragma region CameraCinematics
+
+			TArray<ABaseVehicle*>& vehicles = PlayGameMode->GetVehicles();
+
+			for (ABaseVehicle* vehicle : vehicles)
+			{
+				if (vehicle->IsHumanPlayer() == true &&
+					vehicle->IsCinematicCameraActive() == true &&
+					vehicle->Camera->GetCinematicsDirector().UsingCameraPointCamera(true) == true &&
+					vehicle->Camera->GetCinematicsDirector().IsViewingVehicle(this) == true)
+				{
+					APlayerController* controller = Cast<APlayerController>(vehicle->Controller);
+
+					if (controller != nullptr &&
+						controller->IsLocalController())
+					{
+						controller->ClientPlayCameraShake(ImpactCameraShake, strength * 0.5f);
+
+						result = true;
+					}
+				}
+			}
+
+#pragma endregion CameraCinematics
+
 		}
 	}
 

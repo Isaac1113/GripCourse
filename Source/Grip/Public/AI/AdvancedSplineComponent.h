@@ -158,6 +158,40 @@ public:
 
 #pragma endregion AIVehicleControl
 
+#pragma region CameraCinematics
+
+public:
+
+	// Get the surface sections of the spline.
+	virtual TArray<FSplineSection> GetSurfaceSections() const
+	{ return TArray<FSplineSection>(); }
+
+	// Get the surface break property of the spline over distance.
+	virtual bool GetSurfaceBreakOverDistance(float distance, float& overDistance, int32 direction) const
+	{ return false; }
+
+	// Get the grounded property of the spline over distance.
+	virtual bool GetGroundedOverDistance(float distance, float& overDistance, int32 direction) const
+	{ return true; }
+
+	// Get the clearances of the spline.
+	virtual TArray<float> GetClearancesFromSurface() const
+	{ return TArray<float>(); }
+
+	// Get the distance into between a start and end point.
+	float GetDistanceInto(float distance, float start, float end) const;
+
+	// Get the distance left between a start and end point.
+	float GetDistanceLeft(float distance, float start, float end) const;
+
+	// The sections where there's a relative straight for cinematic camera purposes.
+	TArray<FSplineSection> StraightSections;
+
+	// The sections where there's a relative straight and is exterior for cinematic drone camera purposes.
+	TArray<FSplineSection> DroneSections;
+
+#pragma endregion CameraCinematics
+
 #pragma endregion NavigationSplines
 
 };

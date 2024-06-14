@@ -34,3 +34,49 @@ ACameraBallActor::ACameraBallActor()
 
 	SetRootComponent(CollisionShape);
 }
+
+#pragma region CameraCinematics
+
+/**
+* Launch the camera into orbit.
+***********************************************************************************/
+
+void ACameraBallActor::Launch(const FVector& cameraLocation, const FRotator& cameraRotation, FVector direction, float force, bool angleDownwards) const
+{
+	CollisionShape->SetSimulatePhysics(true);
+	CollisionShape->SetCollisionEnabled(ECollisionEnabled::Type::PhysicsOnly);
+
+	float mass = CollisionShape->GetMass();
+
+	CollisionShape->SetWorldLocation(cameraLocation);
+	CollisionShape->SetWorldRotation(cameraRotation);
+	CollisionShape->SetPhysicsLinearVelocity(direction * force);
+	CollisionShape->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+
+	float x = FMath::FRandRange(mass * 25000.0f, mass * 50000.0f) * (((FMath::Rand() & 1) != 0) ? -1.0f : 1.0f);
+	float y = FMath::FRandRange(mass * 100000.0f, mass * 200000.0f) * (((FMath::Rand() & 3) != 0) ? -0.5f : 0.25f);
+	float z = FMath::FRandRange(mass * 75000.0f, mass * 100000.0f) * (((FMath::Rand() & 1) != 0) ? -1.0f : 1.0f);
+
+	if (angleDownwards == true)
+	{
+		x = FMath::FRandRange(mass * 300000.0f, mass * 500000.0f) * (((FMath::Rand() & 1) != 0) ? -1.0f : 1.0f);
+		y = FMath::FRandRange(mass * 100000.0f, mass * 200000.0f) * 0.2f;
+		z *= 0.5f;
+	}
+
+	CollisionShape->AddTorqueInRadians(cameraRotation.RotateVector(FVector(x, 0.0f, 0.0f)));
+	CollisionShape->AddTorqueInRadians(cameraRotation.RotateVector(FVector(0.0f, y, 0.0f)));
+	CollisionShape->AddTorqueInRadians(cameraRotation.RotateVector(FVector(0.0f, 0.0f, z)));
+}
+
+/**
+* Hibernate the camera so it doesn't affect anything in the scene.
+***********************************************************************************/
+
+void ACameraBallActor::Hibernate() const
+{
+	CollisionShape->SetSimulatePhysics(false);
+	CollisionShape->SetCollisionEnabled(ECollisionEnabled::Type::NoCollision);
+}
+
+#pragma endregion CameraCinematics

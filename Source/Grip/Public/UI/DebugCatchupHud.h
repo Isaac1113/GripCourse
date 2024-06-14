@@ -25,4 +25,12 @@ class ADebugCatchupHUD : public ADebugHUD
 	GENERATED_BODY()
 
 public:
+
+#pragma region VehicleCatchup
+
+	// Draw the HUD.
+	virtual void DrawHUD() override;
+
+#pragma endregion VehicleCatchup
+
 };
