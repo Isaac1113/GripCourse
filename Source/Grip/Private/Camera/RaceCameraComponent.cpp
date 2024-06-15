@@ -534,7 +534,7 @@ void URaceCameraComponent::TickComponent(float deltaSeconds, enum ELevelTick tic
 #if !WITH_EDITOR
 						if (gameState->UsingSplitScreen() == true)
 						{
-							if ((gameState->GeneralOptions.NumberOfLocalPlayers == 2) ||
+							if ((gameState->TransientGameState.NumberOfLocalPlayers == 2) ||
 								(gameState->GraphicsOptions.ScreenResolution.Width >= gameState->GraphicsOptions.ScreenResolution.Height && gameState->GeneralOptions.SplitScreenLayout == ESplitScreenLayout::TwoPlayerHorizontal) ||
 								(gameState->GraphicsOptions.ScreenResolution.Width <= gameState->GraphicsOptions.ScreenResolution.Height && gameState->GeneralOptions.SplitScreenLayout == ESplitScreenLayout::TwoPlayerVertical))
 
